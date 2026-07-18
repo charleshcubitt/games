@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Word Drop</title>
+  <style>
+    :root {
+      --bg: #0f1220;
+      --panel: #171b2e;
+      --grid: #222844;
+      --cell: #2b3357;
+      --text: #eef2ff;
+      --accent: #7c9cff;
+      --good: #35d07f;
+      --warn: #ffcc66;
+      --bad: #ff6b6b;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: linear-gradient(180deg, #0b0e1a, #141a30);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    .wrap {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid #2b3357;
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+    }
+
+    canvas {
+      background: var(--grid);
+      border-radius: 12px;
+      display: block;
+    }
+
+    .side {
+      width: 280px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 28px;
+    }
+
+    h2 {
+      margin: 16px 0 8px;
+      font-size: 18px;
+      color: #cdd7ff;
+    }
+
+    .stat {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #2a3154;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #212848;
+      color: #dbe3ff;
+      margin: 4px 6px 0 0;
+      font-size: 13px;
+    }
+
+    .controls {
+      line-height: 1.7;
+      color: #d5ddff;
+      font-size: 14px;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    button:hover {
+      filter: brightness(1.08);
+    }
+
+    .message {
+      min-height: 24px;
+      margin-top: 10px;
+      color: var(--warn);
+      font-weight: bold;
+    }
+
+    .good {
+      color: var(--good);
+    }
+
+    .bad {
+      color: var(--bad);
+    }
+
+    .small {
+      font-size: 13px;
+      color: #b7c2f2;
+    }
+
+    .footer-note {
+      margin-top: 16px;
+      font-size: 12px;
+      color: #9aa7de;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <canvas id="game" width="300" height="600"></canvas>
+    </div>
+
+    <div class="panel side">
+      <h1>Word Drop</h1>
+      <div class="small">A Tetris-like falling letter game. Make horizontal words to clear them.</div>
+
+      <h2>Stats</h2>
+      <div class="stat"><span>Score</span><strong id="score">0</strong></div>
+      <div class="stat"><span>Level</span><strong id="level">1</strong></div>
+      <div class="stat"><span>Lines / Words Cleared</span><strong id="lines">0</strong></div>
+      <div class="stat"><span>Current Letter</span><strong id="currentLetter">-</strong></div>
+      <div class="stat"><span>Next Letter</span><strong id="nextLetter">-</strong></div>
+
+      <h2>Found Words</h2>
+      <div id="foundWords"></div>
+
+      <h2>Controls</h2>
+      <div class="controls">
+        Left / Right - move<br />
+        Down - soft drop<br />
+        Up or Space - hard drop<br />
+        P - pause<br />
+        R - restart
+      </div>
+
+      <div class="button-row">
+        <button id="restartBtn">Restart</button>
+        <button id="pauseBtn">Pause</button>
+      </div>
+
+      <div id="message" class="message"></div>
+
+      <div class="footer-note">
+        Rules:
+        <br />- Each falling block is one letter.
+        <br />- When a row contains a valid word of 3 or more adjacent letters, those letters clear.
+        <br />- Gravity pulls letters above downward after a clear.
+        <br />- Chain clears are possible.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const COLS = 10;
+    const ROWS = 20;
+    const CELL = 30;
+
+    const scoreEl = document.getElementById("score");
+    const levelEl = document.getElementById("level");
+    const linesEl = document.getElementById("lines");
+    const currentLetterEl = document.getElementById("currentLetter");
+    const nextLetterEl = document.getElementById("nextLetter");
+    const foundWordsEl = document.getElementById("foundWords");
+    const messageEl = document.getElementById("message");
+    const restartBtn = document.getElementById("restartBtn");
+    const pauseBtn = document.getElementById("pauseBtn");
+
+    const COLORS = {
+      A: "#ff6b6b",
+      B: "#f06595",
+      C: "#cc5de8",
+      D: "#845ef7",
+      E: "#5c7cfa",
+      F: "#339af0",
+      G: "#22b8cf",
+      H: "#20c997",
+      I: "#51cf66",
+      J: "#94d82d",
+      K: "#fcc419",
+      L: "#ff922b",
+      M: "#ffa8a8",
+      N: "#74c0fc",
+      O: "#8ce99a",
+      P: "#ffd43b",
+      Q: "#e599f7",
+      R: "#b197fc",
+      S: "#63e6be",
+      T: "#a9e34b",
+      U: "#ffe066",
+      V: "#ffc078",
+      W: "#c0eb75",
+      X: "#f783ac",
+      Y: "#91a7ff",
+      Z: "#66d9e8"
+    };
+
+    // Small built-in dictionary for demo purposes.
+    // You can expand this list a lot.
+    const DICTIONARY = new Set([
+      "CAT","DOG","SUN","MOON","STAR","BOOK","GAME","WORD","DROP","LINE","GRID",
+      "CODE","HTML","JAVA","CSS","PLAY","FUN","RUN","JUMP","STACK","BLOCK","ROW",
+      "TREE","BIRD","FIRE","WATER","EARTH","WIND","STONE","LIGHT","DARK","NOTE",
+      "SAND","WAVE","SHIP","TRAIN","PLANE","CAR","ROAD","PATH","MAP","HOME",
+      "FISH","DUCK","FROG","LION","TIGER","BEAR","MOUSE","HOUSE","GREEN","BLUE",
+      "RED","PINK","BLACK","WHITE","GRAY","GOLD","SILVER","RING","CLOUD","RAIN",
+      "SNOW","ICE","KING","QUEEN","APPLE","GRAPE","MELON","BREAD","CAKE","PIE",
+      "MILK","CHEESE","CHAIR","TABLE","PHONE","SCREEN","GLASS","PLANT","RIVER",
+      "LAKE","BRICK","ROBOT","LASER","SPACE","WORLD","HELLO","TEST","QUICK","SLOW",
+      "SMART","BRAIN","POWER","MAGIC","SPELL","SWORD","SHIELD","NORTH","SOUTH",
+      "EAST","WEST","SCORE","LEVEL","CLEAR","CHAIN","MATCH","ALPHA","BETA","OMEGA"
+    ]);
+
+    // Weighted letters for more word-friendly play.
+    const letterBag = [
+      ..."EEEEEEEEEEEE",
+      ..."AAAAAAAA",
+      ..."IIIIIIII",
+      ..."OOOOOOOO",
+      ..."NNNNNN",
+      ..."RRRRRR",
+      ..."TTTTTT",
+      ..."LLLL",
+      ..."SSSS",
+      ..."UUUU",
+      ..."DDDD",
+      ..."GGG",
+      ..."BB",
+      ..."CC",
+      ..."MM",
+      ..."PP",
+      ..."FF",
+      ..."HH",
+      ..."VV",
+      ..."WW",
+      ..."YY",
+      ..."K",
+      ..."J",
+      ..."X",
+      ..."Q",
+      ..."Z"
+    ];
+
+    let board = [];
+    let current = null;
+    let nextLetter = randomLetter();
+    let score = 0;
+    let level = 1;
+    let lines = 0;
+    let dropInterval = 700;
+    let lastTime = 0;
+    let dropCounter = 0;
+    let gameOver = false;
+    let paused = false;
+    let foundWords = [];
+
+    function randomLetter() {
+      return letterBag[Math.floor(Math.random() * letterBag.length)];
+    }
+
+    function createBoard() {
+      return Array.from({ length: ROWS }, () => Array(COLS).fill(""));
+    }
+
+    function spawnPiece() {
+      const letter = nextLetter;
+      nextLetter = randomLetter();
+
+      current = {
+        x: Math.floor(COLS / 2),
+        y: 0,
+        letter
+      };
+
+      currentLetterEl.textContent = current.letter;
+      nextLetterEl.textContent = nextLetter;
+
+      if (collides(current.x, current.y)) {
+        gameOver = true;
+        setMessage("Game Over", "bad");
+      }
+    }
+
+    function collides(x, y) {
+      if (x < 0 || x >= COLS || y >= ROWS) return true;
+      if (y < 0) return false;
+      return board[y][x] !== "";
+    }
+
+    function mergePiece() {
+      if (current.y >= 0) {
+        board[current.y][current.x] = current.letter;
+      }
+      resolveBoard();
+      spawnPiece();
+    }
+
+    function move(dx) {
+      if (gameOver || paused) return;
+      const nx = current.x + dx;
+      if (!collides(nx, current.y)) {
+        current.x = nx;
+      }
+    }
+
+    function drop() {
+      if (gameOver || paused) return;
+      const ny = current.y + 1;
+      if (!collides(current.x, ny)) {
+        current.y = ny;
+      } else {
+        mergePiece();
+      }
+    }
+
+    function hardDrop() {
+      if (gameOver || paused) return;
+      while (!collides(current.x, current.y + 1)) {
+        current.y++;
+      }
+      mergePiece();
+    }
+
+    function applyGravity() {
+      let moved = false;
+
+      for (let x = 0; x < COLS; x++) {
+        const letters = [];
+        for (let y = ROWS - 1; y >= 0; y--) {
+          if (board[y][x] !== "") {
+            letters.push(board[y][x]);
+          }
+        }
+
+        for (let y = 0; y < ROWS; y++) {
+          board[y][x] = "";
+        }
+
+        for (let i = 0; i < letters.length; i++) {
+          const targetY = ROWS - 1 - i;
+          if (board[targetY][x] !== letters[i]) moved = true;
+          board[targetY][x] = letters[i];
+        }
+      }
+
+      return moved;
+    }
+
+    function findWordsInRow(row) {
+      const results = [];
+      const rowStr = row.map(c => c || ".").join("");
+
+      for (let start = 0; start < COLS; start++) {
+        for (let end = start + 2; end < COLS; end++) {
+          let segment = rowStr.slice(start, end + 1);
+          if (segment.includes(".")) continue;
+          if (DICTIONARY.has(segment)) {
+            results.push({ start, end, word: segment });
+          }
+        }
+      }
+
+      // Prefer longer words first, avoid overlapping duplicates.
+      results.sort((a, b) => (b.end - b.start) - (a.end - a.start));
+
+      const chosen = [];
+      const used = new Set();
+
+      for (const item of results) {
+        let overlap = false;
+        for (let i = item.start; i <= item.end; i++) {
+          if (used.has(i)) {
+            overlap = true;
+            break;
+          }
+        }
+        if (!overlap) {
+          chosen.push(item);
+          for (let i = item.start; i <= item.end; i++) {
+            used.add(i);
+          }
+        }
+      }
+
+      return chosen;
+    }
+
+    function resolveBoard() {
+      let chain = 0;
+
+      while (true) {
+        const cellsToClear = [];
+        const wordsClearedThisPass = [];
+
+        for (let y = 0; y < ROWS; y++) {
+          const matches = findWordsInRow(board[y]);
+          for (const match of matches) {
+            wordsClearedThisPass.push(match.word);
+            for (let x = match.start; x <= match.end; x++) {
+              cellsToClear.push([x, y]);
+            }
+          }
+        }
+
+        if (cellsToClear.length === 0) break;
+
+        chain++;
+
+        for (const [x, y] of cellsToClear) {
+          board[y][x] = "";
+        }
+
+        applyGravity();
+
+        const uniqueWords = [...new Set(wordsClearedThisPass)];
+        foundWords.unshift(...uniqueWords);
+        foundWords = foundWords.slice(0, 16);
+
+        const lettersCleared = cellsToClear.length;
+        const gained = lettersCleared * 10 * chain + uniqueWords.length * 25;
+        score += gained;
+        lines += uniqueWords.length;
+        level = 1 + Math.floor(score / 400);
+        dropInterval = Math.max(180, 700 - (level - 1) * 45);
+
+        setMessage(
+          `${chain > 1 ? "Chain x" + chain + " - " : ""}Cleared: ${uniqueWords.join(", ")} (+${gained})`,
+          "good"
+        );
+
+        updateUI();
+      }
+    }
+
+    function drawCell(x, y, letter, alpha = 1) {
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = letter ? (COLORS[letter] || "#888") : "#2b3357";
+      ctx.fillRect(x * CELL, y * CELL, CELL - 1, CELL - 1);
+
+      if (letter) {
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 18px Arial";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(letter, x * CELL + CELL / 2, y * CELL + CELL / 2 + 1);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawBoard() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          drawCell(x, y, board[y][x]);
+        }
+      }
+
+      if (current && !gameOver) {
+        drawCell(current.x, current.y, current.letter);
+      }
+
+      if (paused) {
+        drawOverlay("Paused");
+      } else if (gameOver) {
+        drawOverlay("Game Over");
+      }
+    }
+
+    function drawOverlay(text) {
+      ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 32px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+    }
+
+    function updateUI() {
+      scoreEl.textContent = score;
+      levelEl.textContent = level;
+      linesEl.textContent = lines;
+      currentLetterEl.textContent = current ? current.letter : "-";
+      nextLetterEl.textContent = nextLetter;
+
+      foundWordsEl.innerHTML = foundWords.length
+        ? foundWords.map(word => `<span class="badge">${word}</span>`).join("")
+        : `<span class="small">No words yet</span>`;
+    }
+
+    function setMessage(text, type = "") {
+      messageEl.textContent = text;
+      messageEl.className = "message";
+      if (type) messageEl.classList.add(type);
+    }
+
+    function togglePause() {
+      if (gameOver) return;
+      paused = !paused;
+      pauseBtn.textContent = paused ? "Resume" : "Pause";
+      setMessage(paused ? "Paused" : "", paused ? "" : "");
+    }
+
+    function restart() {
+      board = createBoard();
+      current = null;
+      nextLetter = randomLetter();
+      score = 0;
+      level = 1;
+      lines = 0;
+      dropInterval = 700;
+      dropCounter = 0;
+      lastTime = 0;
+      gameOver = false;
+      paused = false;
+      foundWords = [];
+      pauseBtn.textContent = "Pause";
+      setMessage("");
+      spawnPiece();
+      updateUI();
+      drawBoard();
+    }
+
+    function update(time = 0) {
+      const delta = time - lastTime;
+      lastTime = time;
+
+      if (!paused && !gameOver) {
+        dropCounter += delta;
+        if (dropCounter > dropInterval) {
+          drop();
+          dropCounter = 0;
+        }
+      }
+
+      drawBoard();
+      requestAnimationFrame(update);
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (!current && !gameOver) return;
+
+      if (e.key === "ArrowLeft") move(-1);
+      else if (e.key === "ArrowRight") move(1);
+      else if (e.key === "ArrowDown") drop();
+      else if (e.key === "ArrowUp" || e.key === " ") hardDrop();
+      else if (e.key.toLowerCase() === "p") togglePause();
+      else if (e.key.toLowerCase() === "r") restart();
+    });
+
+    restartBtn.addEventListener("click", restart);
+    pauseBtn.addEventListener("click", togglePause);
+
+    restart();
+    update();
+  </script>
+</body>
+</html>

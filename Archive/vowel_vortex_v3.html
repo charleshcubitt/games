@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VOWEL VORTEX v3.0</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="vowel_vortex_v3.css">
+</head>
+<body>
+<div id="arcadeCabinet">
+  <div id="titleBar">VOWEL VORTEX <span style="font-size:12px;">v3.0</span></div>
+  <div id="screenWrap">
+    <canvas id="game" width="960" height="640"></canvas>
+    <div id="scanlines"></div>
+    <div id="vignette"></div>
+  </div>
+  <div id="footerBar">
+    <b>&larr; &rarr;</b> ROTATE THE RING &nbsp; | &nbsp; <b>&darr;</b> SPEED UP VOWEL &nbsp; | &nbsp; <b>&uarr;</b> SLOW VOWEL &nbsp; | &nbsp;
+    <b>ENTER</b> START/RESTART &nbsp; | &nbsp; <b>P</b> PAUSE &nbsp; | &nbsp; <b>M</b> MUTE
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+// ---------- CANVAS SETUP ----------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ---------- AUDIO ----------
+let actx = null;
+let muted = false;
+function ensureAudio(){
+  if(!actx){
+    try{ actx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ actx=null; }
+  }
+  if(actx && actx.state==='suspended'){ actx.resume(); }
+}
+function beep(freq, dur, type, vol, delay){
+  if(muted || !actx) return;
+  type = type||'square'; vol = vol===undefined?0.15:vol; delay = delay||0;
+  const t = actx.currentTime + delay;
+  const o = actx.createOscillator();
+  const g = actx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, t);
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(actx.destination);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+function sfxCatchGood(){ beep(880,0.07,'square',0.16,0); beep(1320,0.08,'square',0.14,0.05); }
+function sfxCatchBad(){ beep(150,0.22,'sawtooth',0.18,0); }
+function sfxComplete(){ [523,659,784,1046].forEach((f,i)=>beep(f,0.11,'triangle',0.15,i*0.07)); }
+function sfxGameOver(){ [420,340,260,160].forEach((f,i)=>beep(f,0.22,'sawtooth',0.18,i*0.16)); }
+function sfxStart(){ beep(700,0.09,'square',0.14,0); beep(950,0.09,'square',0.14,0.09); }
+function sfxLife(){ beep(200,0.3,'sawtooth',0.2,0); }
+
+// ---------- WORD BANK ----------
+const VOWELS = 'AEIOU';
+const WORDLIST = [
+  'STAR','MOON','FIRE','WAVE','BIKE','KITE','ROPE','BONE','ZONE','NOTE',
+  'WOLF','LION','BEAR','WIND','RAIN','SNOW','LEAF','TREE','ROCK','DUCK',
+  'BIRD','CAKE','CAVE','APPLE','MANGO','LEMON','GRAPE','PEACH','BREAD',
+  'CHAIR','TABLE','MOUSE','HOUSE','PLANE','TRAIN','TIGER','ZEBRA','ROBOT',
+  'PIZZA','CANDY','BEACH','CLOUD','STORM','FLAME','SPARK','BRICK','STONE',
+  'RIVER','QUIET','GARDEN','CASTLE','DRAGON','GUITAR','ROCKET','PLANET',
+  'SILVER','GOLDEN','PURPLE','ORANGE','ANIMAL','BASKET','CANDLE','BOTTLE',
+  'PUZZLE','SIMPLE','YELLOW','FOREST'
+];
+let wordBag = [];
+function refillBag(){
+  wordBag = WORDLIST.slice();
+  for(let i=wordBag.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [wordBag[i],wordBag[j]] = [wordBag[j],wordBag[i]];
+  }
+}
+function nextWord(){
+  if(wordBag.length===0) refillBag();
+  return wordBag.pop();
+}
+
+// ---------- GAME CONSTANTS ----------
+const MAX_SEGMENTS = 24;         // safety ceiling only — the ring keeps growing well beyond normal play
+const ROT_SPEED = 2.5;           // radians / sec
+const COMPLETE_DURATION = 0.9;
+const BASE_FALL_SPEED = 32;      // slower fall for more reaction time
+const HUD_TOP = 78;
+const PLAY_TOP = HUD_TOP + 10;
+const PLAY_BOTTOM = H - 34;
+const PLAY_LEFT = 40;
+const PLAY_RIGHT = W - 40;
+const FALL_START_Y = PLAY_TOP + 6; // vowels drop from the top of the screen
+const SEGMENT_COLORS = ['#00fff2','#ff00e6','#39ff14','#ffe600','#ff8c3c','#a86bff'];
+
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+function normAngle(a){ a = a % (Math.PI*2); if(a<0) a += Math.PI*2; return a; }
+
+// ---------- STATE ----------
+let state = 'title'; // title | playing | paused | gameover
+let ring = null;
+let score = 0;
+let lives = 3;
+let highScore = parseInt(localStorage.getItem('vowelVortexHighScore')||'0',10) || 0;
+let elapsed = 0;
+let speedMult = 1;
+let particles = [];
+let popups = [];
+let stars = [];
+let keysDown = new Set();
+let lastTime = 0;
+let segColorCounter = 0;
+let combo = 0;
+
+for(let i=0;i<70;i++){
+  stars.push({x:Math.random()*W, y:Math.random()*H, r:Math.random()*1.6+0.3, tw:Math.random()*Math.PI*2});
+}
+
+// ---------- SEGMENT (WORD) FACTORY ----------
+function makeSegment(){
+  const w = nextWord();
+  const letters = w.split('').map(ch=>({
+    ch: ch,
+    isVowel: VOWELS.indexOf(ch) !== -1,
+    filled: VOWELS.indexOf(ch) === -1,
+    angleOffset: 0,
+    targetAngleOffset: 0
+  }));
+  const color = SEGMENT_COLORS[segColorCounter % SEGMENT_COLORS.length];
+  segColorCounter++;
+  return {
+    word: w,
+    letters: letters,
+    color: color,
+    completing: false,
+    completeTimer: 0,
+    gapStartIndex: 0
+  };
+}
+
+function isSegmentDone(seg){
+  return seg.letters.every(l=>l.filled);
+}
+
+// ---------- RING LAYOUT ----------
+function relayoutRing(snap){
+  const segs = ring.segments;
+  let totalSlots = 0;
+  segs.forEach(seg=> totalSlots += seg.letters.length + 1); // +1 gap slot after each word
+  if(totalSlots===0) return;
+  const anglePerSlot = (Math.PI*2)/totalSlots;
+  let idx = 0;
+  segs.forEach(seg=>{
+    seg.letters.forEach(l=>{
+      l.targetAngleOffset = idx*anglePerSlot;
+      if(snap) l.angleOffset = l.targetAngleOffset;
+      idx++;
+    });
+    seg.gapStartIndex = idx;
+    idx++;
+  });
+  ring.totalSlots = totalSlots;
+  ring.anglePerSlot = anglePerSlot;
+  // the ring keeps expanding as words pile on, up to what the screen can hold —
+  // beyond that it packs tiles tighter rather than overflowing the play area
+  ring.targetRadius = clamp(155 + totalSlots*5, 155, 216);
+  // bigger tiles than before for readability, still shrinking gracefully as the ring fills up
+  ring.tileSize = clamp(34 - totalSlots*0.4, 17, 34);
+}
+
+// ---------- GAME RESET ----------
+function startGame(){
+  refillBag();
+  segColorCounter = 0;
+  ring = {
+    rotation: 0,
+    radius: 205,
+    targetRadius: 205,
+    tileSize: 32,
+    cx: (PLAY_LEFT+PLAY_RIGHT)/2,
+    cy: (PLAY_TOP+PLAY_BOTTOM)/2,
+    segments: [],
+    fallingVowel: null,
+    spawnTimer: 1.0,
+    totalSlots: 0,
+    anglePerSlot: 0
+  };
+  for(let i=0;i<3;i++) ring.segments.push(makeSegment());
+  relayoutRing(true);
+  ring.radius = ring.targetRadius;
+  score = 0;
+  lives = 3;
+  elapsed = 0;
+  speedMult = 1;
+  combo = 0;
+  particles = [];
+  popups = [];
+  state = 'playing';
+  ensureAudio();
+  sfxStart();
+}
+
+// ---------- INPUT ----------
+window.addEventListener('keydown', (e)=>{
+  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Enter',' ','p','P','m','M'].indexOf(e.key)!==-1){
+    e.preventDefault();
+  }
+  ensureAudio();
+  if(e.key==='ArrowLeft' || e.key==='ArrowRight' || e.key==='ArrowUp' || e.key==='ArrowDown'){
+    keysDown.add(e.key);
+  }
+  if(!e.repeat){
+    if(e.key==='Enter' || e.key===' '){
+      if(state==='title' || state==='gameover'){
+        startGame();
+      } else if(state==='paused'){
+        state='playing';
+      }
+    }
+    if(e.key==='p' || e.key==='P'){
+      if(state==='playing') state='paused';
+      else if(state==='paused') state='playing';
+    }
+    if(e.key==='m' || e.key==='M'){
+      muted = !muted;
+    }
+  }
+});
+window.addEventListener('keyup', (e)=>{
+  keysDown.delete(e.key);
+});
+canvas.addEventListener('click', ()=>{
+  ensureAudio();
+  if(state==='title' || state==='gameover'){ startGame(); }
+});
+
+// ---------- PARTICLES / POPUPS ----------
+function burst(x,y,color,count){
+  for(let i=0;i<count;i++){
+    const ang = Math.random()*Math.PI*2;
+    const spd = 40+Math.random()*120;
+    particles.push({
+      x,y, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd,
+      life: 0.5+Math.random()*0.4, maxLife:0.9, color
+    });
+  }
+}
+function addPopup(x,y,text,color){
+  popups.push({x,y,text,color,life:0.9,maxLife:0.9});
+}
+
+// ---------- CATCH RESOLUTION ----------
+function resolveCatch(){
+  const fv = ring.fallingVowel;
+  let nearestAny = null, nearestAnyDiff = Infinity;
+  let nearestMatch = null, nearestMatchDiff = Infinity;
+  ring.segments.forEach(seg=>{
+    if(seg.completing) return;
+    seg.letters.forEach(l=>{
+      const ang = normAngle(ring.rotation + l.angleOffset - Math.PI/2);
+      let diff = Math.abs(ang - Math.PI/2);
+      if(diff>Math.PI) diff = Math.PI*2 - diff;
+      if(diff < nearestAnyDiff){ nearestAnyDiff = diff; nearestAny = {seg,l}; }
+      if(l.isVowel && !l.filled && l.ch===fv.ch && diff < nearestMatchDiff){
+        nearestMatchDiff = diff; nearestMatch = {seg,l};
+      }
+    });
+  });
+  ring.fallingVowel = null;
+  // magnetic snap: if a correct, still-empty slot is anywhere reasonably close
+  // to the bottom marker, snap onto it instead of requiring pixel-perfect alignment
+  const snapTolerance = Math.max((ring.anglePerSlot||0.3)*1.6, 0.55);
+  const best = (nearestMatch && nearestMatchDiff <= snapTolerance) ? nearestMatch : nearestAny;
+  if(!best) return;
+  const seg = best.seg, l = best.l;
+  const px = ring.cx, py = ring.cy + ring.radius;
+
+  if(l.isVowel && !l.filled && l.ch===fv.ch){
+    l.filled = true;
+    combo++;
+    const gained = 50 + Math.min(combo,10)*10;
+    score += gained;
+    if(score>highScore) highScore = score;
+    addPopup(px,py-10, '+'+gained, '#39ff14');
+    burst(px,py,'#39ff14',18);
+    sfxCatchGood();
+    if(isSegmentDone(seg)){
+      seg.completing = true;
+      seg.completeTimer = 0;
+      const bonus = 200 + seg.word.length*10;
+      score += bonus;
+      if(score>highScore) highScore = score;
+      addPopup(ring.cx, ring.cy, 'WORD! +'+bonus, '#ffe600');
+      sfxComplete();
+    }
+  } else {
+    combo = 0;
+    addPopup(px,py-10,'MISS','#ff2b4e');
+    burst(px,py,'#ff2b4e',14);
+    sfxCatchBad();
+    lives -= 1;
+    if(lives<=0){
+      lives = 0;
+      state = 'gameover';
+      if(score>highScore){ highScore=score; localStorage.setItem('vowelVortexHighScore', String(highScore)); }
+      sfxGameOver();
+    } else {
+      sfxLife();
+    }
+  }
+}
+
+// ---------- UPDATE ----------
+function pickFallLetter(){
+  const needed = [];
+  ring.segments.forEach(seg=>{
+    if(seg.completing) return;
+    seg.letters.forEach(l=>{ if(l.isVowel && !l.filled) needed.push(l.ch); });
+  });
+  if(needed.length===0) return null;
+  if(Math.random()<0.75){
+    return needed[Math.floor(Math.random()*needed.length)];
+  }
+  return VOWELS[Math.floor(Math.random()*VOWELS.length)];
+}
+
+function update(dt){
+  elapsed += (state==='playing') ? dt : 0;
+  speedMult = Math.min(2.4, 1 + Math.floor(elapsed/20)*0.12);
+
+  particles.forEach(p=>{ p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=200*dt; p.life-=dt; });
+  particles = particles.filter(p=>p.life>0);
+  popups.forEach(p=>{ p.y -= 26*dt; p.life -= dt; });
+  popups = popups.filter(p=>p.life>0);
+
+  if(state!=='playing' || !ring) return;
+
+  // smooth radius/tile lerp
+  ring.radius += (ring.targetRadius - ring.radius) * Math.min(1, dt*5);
+
+  // rotation control
+  if(keysDown.has('ArrowLeft')) ring.rotation -= ROT_SPEED*dt;
+  if(keysDown.has('ArrowRight')) ring.rotation += ROT_SPEED*dt;
+
+  // lerp each letter toward its target slot angle (smooth relayout on word swap)
+  ring.segments.forEach(seg=>{
+    seg.letters.forEach(l=>{
+      l.angleOffset += (l.targetAngleOffset - l.angleOffset) * Math.min(1, dt*6);
+    });
+  });
+
+  // completing segment timers
+  const toFinalize = [];
+  ring.segments.forEach(seg=>{
+    if(seg.completing){
+      seg.completeTimer += dt;
+      if(seg.completeTimer >= COMPLETE_DURATION) toFinalize.push(seg);
+    }
+  });
+
+  // falling vowel motion — down arrow speeds the drop up, up arrow slows it down
+  if(ring.fallingVowel){
+    let playerFallMult = 1;
+    if(keysDown.has('ArrowDown')) playerFallMult = 2.6;
+    else if(keysDown.has('ArrowUp')) playerFallMult = 0.35;
+    ring.fallingVowel.y += BASE_FALL_SPEED*speedMult*playerFallMult*dt;
+    const catchY = ring.cy + ring.radius;
+    if(ring.fallingVowel.y >= catchY){
+      resolveCatch();
+    }
+  } else if(state==='playing'){
+    ring.spawnTimer -= dt;
+    if(ring.spawnTimer<=0){
+      const letter = pickFallLetter();
+      if(letter){
+        ring.fallingVowel = { ch: letter, y: FALL_START_Y };
+      }
+      const interval = Math.max(0.5, 1.8 - elapsed*0.01);
+      ring.spawnTimer = interval*0.6 + Math.random()*interval*0.6;
+    }
+  }
+
+  if(toFinalize.length>0){
+    toFinalize.forEach(seg=>{
+      const idx = ring.segments.indexOf(seg);
+      if(idx!==-1) ring.segments.splice(idx,1);
+      let addCount = 2;
+      while(addCount>0 && ring.segments.length<MAX_SEGMENTS){
+        ring.segments.push(makeSegment());
+        addCount--;
+      }
+    });
+    relayoutRing(false);
+  }
+
+  stars.forEach(s=> s.tw += dt*2);
+}
+
+// ---------- RENDER ----------
+function drawStarfield(){
+  stars.forEach(s=>{
+    const a = 0.4 + Math.sin(s.tw)*0.3;
+    ctx.fillStyle = `rgba(180,200,255,${Math.max(0,a)})`;
+    ctx.beginPath();
+    ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
+    ctx.fill();
+  });
+}
+
+function drawGrid(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,0,230,0.18)';
+  ctx.lineWidth = 1;
+  const horizon = H-70;
+  for(let i=0;i<14;i++){
+    const y = horizon + i*i*1.1;
+    if(y>H) break;
+    ctx.beginPath();
+    ctx.moveTo(0,y); ctx.lineTo(W,y);
+    ctx.stroke();
+  }
+  for(let x=-8;x<=8;x++){
+    ctx.beginPath();
+    ctx.moveTo(W/2 + x*40, horizon);
+    ctx.lineTo(W/2 + x*140, H);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+function drawRing(){
+  const size = ring.tileSize;
+
+  // base ring circle
+  ctx.strokeStyle = 'rgba(0,255,242,0.3)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(ring.cx, ring.cy, ring.radius, 0, Math.PI*2);
+  ctx.stroke();
+
+  // hub decoration
+  ctx.save();
+  ctx.translate(ring.cx, ring.cy);
+  ctx.rotate(-ring.rotation*0.6);
+  ctx.strokeStyle = 'rgba(255,0,230,0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for(let i=0;i<6;i++){
+    const a = i*(Math.PI/3);
+    ctx.moveTo(0,0);
+    ctx.lineTo(Math.cos(a)*16, Math.sin(a)*16);
+  }
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(0,0,6,0,Math.PI*2); ctx.strokeStyle='rgba(0,255,242,0.6)'; ctx.stroke();
+  ctx.restore();
+
+  // catch marker (fixed bottom)
+  const markY = ring.cy + ring.radius + 14;
+  ctx.fillStyle = 'rgba(255,230,0,0.9)';
+  ctx.beginPath();
+  ctx.moveTo(ring.cx-9, markY);
+  ctx.lineTo(ring.cx+9, markY);
+  ctx.lineTo(ring.cx, markY-11);
+  ctx.closePath();
+  ctx.fill();
+
+  // gap separators
+  ring.segments.forEach(seg=>{
+    const gapAngle = ring.rotation + seg.gapStartIndex*ring.anglePerSlot - Math.PI/2;
+    const gx = ring.cx + Math.cos(gapAngle)*ring.radius;
+    const gy = ring.cy + Math.sin(gapAngle)*ring.radius;
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.arc(gx,gy,2.5,0,Math.PI*2);
+    ctx.fill();
+  });
+
+  // letters — each tile is rotated to point outward along its radius (spoke style)
+  ring.segments.forEach(seg=>{
+    let scale = 1, alpha = 1;
+    if(seg.completing){
+      const t = seg.completeTimer/COMPLETE_DURATION;
+      scale = 1 + Math.sin(t*Math.PI)*0.25;
+      alpha = 1 - Math.max(0, t-0.6)/0.4;
+    }
+    seg.letters.forEach(l=>{
+      const ang = ring.rotation + l.angleOffset - Math.PI/2;
+      const lx = ring.cx + Math.cos(ang)*ring.radius;
+      const ly = ring.cy + Math.sin(ang)*ring.radius;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(lx,ly);
+      ctx.rotate(ang + Math.PI/2); // radial orientation: tile points outward from the hub
+      ctx.scale(scale,scale);
+      ctx.font = Math.round(size*0.56)+'px "Press Start 2P", monospace';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      if(l.filled){
+        const isVowelFill = l.isVowel;
+        const col = isVowelFill ? '#ffe600' : seg.color;
+        ctx.fillStyle = isVowelFill ? 'rgba(255,230,0,0.18)' : 'rgba(255,255,255,0.08)';
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 2;
+        roundRect(-size/2,-size/2,size,size,5);
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = col;
+        ctx.shadowColor = col; ctx.shadowBlur = isVowelFill?10:4;
+        ctx.fillText(l.ch, 0, 1);
+        ctx.shadowBlur = 0;
+      } else {
+        ctx.strokeStyle = seg.color;
+        ctx.globalAlpha = alpha*0.75;
+        ctx.setLineDash([3,3]);
+        ctx.lineWidth = 2;
+        roundRect(-size/2,-size/2,size,size,5);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = seg.color;
+        ctx.beginPath();
+        ctx.arc(0,0,2.4,0,Math.PI*2);
+        ctx.fill();
+      }
+      ctx.restore();
+    });
+  });
+
+  // falling vowel
+  if(ring.fallingVowel){
+    const fv = ring.fallingVowel;
+    ctx.save();
+    ctx.translate(ring.cx, fv.y);
+    ctx.fillStyle = 'rgba(57,255,20,0.15)';
+    ctx.strokeStyle = '#39ff14';
+    ctx.shadowColor = '#39ff14'; ctx.shadowBlur = 14;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0,0,16,0,Math.PI*2);
+    ctx.fill(); ctx.stroke();
+    ctx.shadowBlur=0;
+    ctx.fillStyle = '#39ff14';
+    ctx.font = '16px "Press Start 2P", monospace';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(fv.ch, 0, 1);
+    ctx.restore();
+  }
+}
+
+function drawParticles(){
+  particles.forEach(p=>{
+    ctx.globalAlpha = Math.max(0,p.life/p.maxLife);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x,p.y,2.4,0,Math.PI*2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+function drawPopups(){
+  popups.forEach(p=>{
+    ctx.globalAlpha = Math.max(0,p.life/p.maxLife);
+    ctx.fillStyle = p.color;
+    ctx.font = '11px "Press Start 2P", monospace';
+    ctx.textAlign='center';
+    ctx.fillText(p.text, p.x, p.y);
+  });
+  ctx.globalAlpha = 1;
+}
+
+function drawHUD(){
+  ctx.save();
+  ctx.font='14px "Press Start 2P", monospace';
+  ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.fillStyle='#00fff2';
+  ctx.shadowColor='#00fff2'; ctx.shadowBlur=6;
+  ctx.fillText('SCORE '+String(score).padStart(6,'0'), 24, 22);
+  ctx.shadowBlur=0;
+
+  ctx.textAlign='center';
+  ctx.fillStyle='#ffe600';
+  ctx.shadowColor='#ffe600'; ctx.shadowBlur=6;
+  ctx.fillText('HIGH '+String(highScore).padStart(6,'0'), W/2, 22);
+  ctx.shadowBlur=0;
+
+  ctx.textAlign='right';
+  ctx.fillStyle='#ff2b4e';
+  ctx.shadowColor='#ff2b4e'; ctx.shadowBlur=6;
+  let hearts=''; for(let i=0;i<lives;i++) hearts+='♥ ';
+  ctx.fillText(hearts.trim()||'--', W-24, 22);
+  ctx.shadowBlur=0;
+
+  ctx.font='9px "Press Start 2P", monospace';
+  ctx.textAlign='left';
+  ctx.fillStyle='rgba(255,255,255,0.4)';
+  ctx.fillText('SPEED x'+speedMult.toFixed(2), 24, 48);
+  ctx.textAlign='right';
+  ctx.fillStyle='rgba(255,255,255,0.4)';
+  ctx.fillText('WORDS ON RING '+(ring?ring.segments.length:0), W-24, 48);
+
+  ctx.strokeStyle='rgba(0,255,242,0.25)';
+  ctx.beginPath(); ctx.moveTo(20,66); ctx.lineTo(W-20,66); ctx.stroke();
+  ctx.restore();
+}
+
+function centeredText(text, y, size, color, glow){
+  ctx.font = size+'px "Press Start 2P", monospace';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle=color;
+  if(glow){ ctx.shadowColor=color; ctx.shadowBlur=glow; }
+  ctx.fillText(text, W/2, y);
+  ctx.shadowBlur=0;
+}
+
+function drawTitleScreen(){
+  drawStarfield();
+  drawGrid();
+  centeredText('VOWEL VORTEX', H/2-130, 34, '#ff00e6', 18);
+  const blink = Math.floor(Date.now()/500)%2===0;
+  if(blink) centeredText('PRESS ENTER TO START', H/2-46, 14, '#ffe600', 10);
+  centeredText('THREE WORDS SHARE ONE RADIAL RING', H/2, 11, '#00fff2', 6);
+  centeredText('ROTATE IT SO THE RIGHT BLANK', H/2+24, 9, '#8a7fc0', 0);
+  centeredText('IS WAITING AT THE BOTTOM MARKER', H/2+42, 9, '#8a7fc0', 0);
+  centeredText('UP / DOWN CONTROL FALL SPEED', H/2+60, 9, '#8a7fc0', 0);
+  centeredText('HIGH SCORE '+String(highScore).padStart(6,'0'), H/2+104, 12, '#39ff14', 6);
+  centeredText('v3.0', H/2+150, 8, 'rgba(255,255,255,0.3)', 0);
+}
+
+function drawPauseOverlay(){
+  ctx.fillStyle='rgba(0,0,0,0.55)';
+  ctx.fillRect(0,0,W,H);
+  centeredText('PAUSED', H/2, 26, '#ffe600', 14);
+  centeredText('PRESS P TO RESUME', H/2+36, 10, '#00fff2', 6);
+}
+
+function drawGameOverScreen(){
+  drawStarfield();
+  ctx.fillStyle='rgba(5,1,15,0.75)';
+  ctx.fillRect(0,0,W,H);
+  centeredText('GAME OVER', H/2-70, 30, '#ff2b4e', 16);
+  centeredText('SCORE '+String(score).padStart(6,'0'), H/2-16, 16, '#00fff2', 8);
+  centeredText('HIGH SCORE '+String(highScore).padStart(6,'0'), H/2+14, 12, '#ffe600', 6);
+  const blink = Math.floor(Date.now()/500)%2===0;
+  if(blink) centeredText('PRESS ENTER TO RETRY', H/2+70, 12, '#39ff14', 8);
+}
+
+function render(){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#05010f';
+  ctx.fillRect(0,0,W,H);
+
+  if(state==='title'){
+    drawTitleScreen();
+    return;
+  }
+
+  drawStarfield();
+  drawGrid();
+  if(ring) drawRing();
+  drawParticles();
+  drawPopups();
+  drawHUD();
+
+  if(state==='paused') drawPauseOverlay();
+  if(state==='gameover') drawGameOverScreen();
+}
+
+// ---------- MAIN LOOP ----------
+function loop(now){
+  if(!lastTime) lastTime = now;
+  let dt = (now - lastTime)/1000;
+  if(dt>0.05) dt = 0.05;
+  lastTime = now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

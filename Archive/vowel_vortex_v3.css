@@ -1,0 +1,83 @@
+:root{
+  --neon-cyan:#00fff2;
+  --neon-magenta:#ff00e6;
+  --neon-yellow:#ffe600;
+  --neon-green:#39ff14;
+  --neon-red:#ff2b4e;
+  --bg-deep:#05010f;
+}
+*{box-sizing:border-box;}
+html,body{
+  margin:0;padding:0;height:100%;
+  background:radial-gradient(ellipse at center, #0d0221 0%, #05010f 60%, #000 100%);
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Press Start 2P','Courier New',monospace;
+  color:var(--neon-cyan);
+  overflow:hidden;
+}
+#arcadeCabinet{
+  position:relative;
+  padding:18px 18px 26px;
+  border-radius:22px;
+  background:linear-gradient(160deg,#1a0a2e,#0a0416 60%);
+  box-shadow:
+    0 0 0 2px #000,
+    0 0 0 6px #2a1a44,
+    0 0 40px 6px rgba(255,0,230,0.25),
+    inset 0 0 30px rgba(0,255,242,0.08);
+}
+#titleBar{
+  text-align:center;
+  font-size:22px;
+  letter-spacing:4px;
+  color:var(--neon-magenta);
+  text-shadow:0 0 6px var(--neon-magenta),0 0 18px var(--neon-magenta);
+  margin-bottom:10px;
+  animation:hueflicker 3.2s infinite steps(1);
+}
+@keyframes hueflicker{
+  0%,100%{color:var(--neon-magenta);text-shadow:0 0 6px var(--neon-magenta),0 0 18px var(--neon-magenta);}
+  50%{color:var(--neon-cyan);text-shadow:0 0 6px var(--neon-cyan),0 0 18px var(--neon-cyan);}
+}
+#screenWrap{
+  position:relative;
+  width:960px;max-width:92vw;
+  border:3px solid #3a2a5a;
+  border-radius:8px;
+  background:#000;
+  box-shadow:inset 0 0 60px rgba(0,255,242,0.06);
+  overflow:hidden;
+}
+canvas{
+  display:block;
+  width:100%;
+  height:auto;
+  image-rendering:pixelated;
+  background:#000;
+}
+#scanlines{
+  position:absolute;inset:0;
+  pointer-events:none;
+  background:repeating-linear-gradient(
+    to bottom,
+    rgba(255,255,255,0.035) 0px,
+    rgba(255,255,255,0.035) 1px,
+    rgba(0,0,0,0) 2px,
+    rgba(0,0,0,0) 3px
+  );
+  mix-blend-mode:overlay;
+}
+#vignette{
+  position:absolute;inset:0;
+  pointer-events:none;
+  box-shadow:inset 0 0 140px 40px rgba(0,0,0,0.85);
+}
+#footerBar{
+  margin-top:12px;
+  text-align:center;
+  font-size:9px;
+  color:#7a6fa8;
+  letter-spacing:1px;
+  line-height:1.8;
+}
+#footerBar b{color:var(--neon-yellow);}

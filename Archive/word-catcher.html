@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Word Catcher</title>
+  <style>
+    :root {
+      --bg: #0f1220;
+      --panel: #171b2e;
+      --grid: #222844;
+      --text: #eef2ff;
+      --accent: #7c9cff;
+      --good: #35d07f;
+      --warn: #ffcc66;
+      --bad: #ff6b6b;
+      --slot: #2b3357;
+      --slot-active: #42518c;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: linear-gradient(180deg, #0b0e1a, #141a30);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    .wrap {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid #2b3357;
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+    }
+
+    canvas {
+      background: var(--grid);
+      border-radius: 12px;
+      display: block;
+    }
+
+    .side { width: 300px; }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 28px;
+    }
+
+    h2 {
+      margin: 16px 0 8px;
+      font-size: 18px;
+      color: #cdd7ff;
+    }
+
+    .stat {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #2a3154;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #212848;
+      color: #dbe3ff;
+      margin: 4px 6px 0 0;
+      font-size: 13px;
+    }
+
+    .controls {
+      line-height: 1.7;
+      color: #d5ddff;
+      font-size: 14px;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    button:hover { filter: brightness(1.08); }
+
+    .message {
+      min-height: 24px;
+      margin-top: 10px;
+      color: var(--warn);
+      font-weight: bold;
+    }
+
+    .good { color: var(--good); }
+    .bad { color: var(--bad); }
+
+    .small {
+      font-size: 13px;
+      color: #b7c2f2;
+    }
+
+    .footer-note {
+      margin-top: 16px;
+      font-size: 12px;
+      color: #9aa7de;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <canvas id="game" width="720" height="640"></canvas>
+    </div>
+
+    <div class="panel side">
+      <h1>Word Catcher</h1>
+      <div class="small">Catch falling letters with moving partial words. Complete the spelling to clear them.</div>
+
+      <h2>Stats</h2>
+      <div class="stat"><span>Score</span><strong id="score">0</strong></div>
+      <div class="stat"><span>Level</span><strong id="level">1</strong></div>
+      <div class="stat"><span>Words Completed</span><strong id="cleared">0</strong></div>
+      <div class="stat"><span>Current Letter</span><strong id="currentLetter">-</strong></div>
+      <div class="stat"><span>Lives</span><strong id="lives">3</strong></div>
+
+      <h2>Completed Words</h2>
+      <div id="foundWords"></div>
+
+      <h2>Controls</h2>
+      <div class="controls">
+        Left / Right - move active word lane<br />
+        Down - fast fall<br />
+        P - pause<br />
+        R - restart
+      </div>
+
+      <div class="button-row">
+        <button id="restartBtn">Restart</button>
+        <button id="pauseBtn">Pause</button>
+      </div>
+
+      <div id="message" class="message"></div>
+
+      <div class="footer-note">
+        Rules:
+        <br />- One letter falls at a time.
+        <br />- Partial words 5-8 letters long move in from the screen edge at the bottom.
+        <br />- Use the arrow keys to slide the word row left or right.
+        <br />- Catch the falling letter in the correct blank spot to complete the word.
+        <br />- Completed words disappear and new ones keep scrolling in.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    const scoreEl = document.getElementById('score');
+    const levelEl = document.getElementById('level');
+    const clearedEl = document.getElementById('cleared');
+    const currentLetterEl = document.getElementById('currentLetter');
+    const livesEl = document.getElementById('lives');
+    const foundWordsEl = document.getElementById('foundWords');
+    const messageEl = document.getElementById('message');
+    const restartBtn = document.getElementById('restartBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+    const CATCH_Y = HEIGHT - 110;
+    const SLOT_SIZE = 44;
+    const SLOT_GAP = 6;
+    const LANE_HEIGHT = 72;
+
+    const WORDS = [
+      'PLANET','THUNDER','CAPTAIN','MYSTERY','HARBOR','FLOWERS','SPARKLE','RAINBOW',
+      'LIBRARY','MONSTER','ORCHARD','PICTURE','JOURNEY','TREASURE','ISLANDS','CRYSTAL',
+      'NETWORK','BALLOON','FREEDOM','HOSPITAL','SAPPHIRE','ELEPHANT','NOTEBOOK','SUNSHINE',
+      'MOUNTAIN','PAINTING','BASEBALL','LANGUAGE','HORIZON','CAMPFIRE','SEASHELL','FRICTION',
+      'ANCIENT','ROCKETS','WEATHER','COUNTRY','MELODY','VICTORY','PIONEER','GALAXY'
+    ].filter(word => word.length >= 5 && word.length <= 8);
+
+    let fallingLetter;
+    let words = [];
+    let score = 0;
+    let level = 1;
+    let completed = 0;
+    let lives = 3;
+    let paused = false;
+    let gameOver = false;
+    let foundWords = [];
+    let activeWordIndex = 0;
+    let lastTime = 0;
+    let spawnTimer = 0;
+    let spawnInterval = 2600;
+
+    function rand(min, max) {
+      return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    function pickWord() {
+      return WORDS[Math.floor(Math.random() * WORDS.length)];
+    }
+
+    function makePartialWord(word) {
+      const missingIndex = rand(1, word.length - 2);
+      const display = word.split('');
+      const neededLetter = display[missingIndex];
+      display[missingIndex] = '_';
+      return {
+        fullWord: word,
+        display,
+        missingIndex,
+        neededLetter
+      };
+    }
+
+    function makeScrollingWord() {
+      const data = makePartialWord(pickWord());
+      const totalWidth = data.display.length * SLOT_SIZE + (data.display.length - 1) * SLOT_GAP;
+      const fromLeft = Math.random() < 0.5;
+      const speedBase = 0.9 + level * 0.18;
+
+      return {
+        ...data,
+        x: fromLeft ? -totalWidth - 30 : WIDTH + 30,
+        y: CATCH_Y,
+        totalWidth,
+        drift: fromLeft ? speedBase : -speedBase,
+        settled: false,
+        flash: 0
+      };
+    }
+
+    function spawnFallingLetter(letter = null) {
+      const targetWord = words.find(w => w.settled) || words[0];
+      const useCorrect = targetWord && Math.random() < 0.72;
+      const nextLetter = letter || (useCorrect ? targetWord.neededLetter : String.fromCharCode(65 + rand(0, 25)));
+
+      fallingLetter = {
+        char: nextLetter,
+        x: WIDTH / 2,
+        y: -20,
+        vy: 2.4 + level * 0.35
+      };
+
+      currentLetterEl.textContent = fallingLetter.char;
+    }
+
+    function centerSettledWords() {
+      const settled = words.filter(w => w.settled);
+      if (!settled.length) return;
+
+      const total = settled.reduce((sum, w) => sum + w.totalWidth, 0) + (settled.length - 1) * 18;
+      let startX = (WIDTH - total) / 2;
+      for (const word of settled) {
+        word.x = startX;
+        startX += word.totalWidth + 18;
+      }
+    }
+
+    function updateWords(delta) {
+      for (const word of words) {
+        if (!word.settled) {
+          word.x += word.drift * delta * 0.06;
+
+          const targetBandMin = 70;
+          const targetBandMax = WIDTH - word.totalWidth - 70;
+          if (word.x >= targetBandMin && word.x <= targetBandMax) {
+            word.settled = true;
+            word.drift = 0;
+            centerSettledWords();
+          }
+        }
+
+        if (word.flash > 0) {
+          word.flash -= delta;
+        }
+      }
+
+      const visible = words.filter(w => w.x + w.totalWidth > -80 && w.x < WIDTH + 80);
+      words = visible;
+
+      if (activeWordIndex >= words.length) activeWordIndex = Math.max(0, words.length - 1);
+    }
+
+    function moveActiveWord(dir) {
+      if (paused || gameOver) return;
+      const settled = words.filter(w => w.settled);
+      if (!settled.length) return;
+
+      const active = settled[Math.min(activeWordIndex, settled.length - 1)];
+      active.x += dir * 24;
+      active.x = Math.max(10, Math.min(WIDTH - active.totalWidth - 10, active.x));
+    }
+
+    function nextLane() {
+      const settled = words.filter(w => w.settled);
+      if (!settled.length) return;
+      activeWordIndex = (activeWordIndex + 1) % settled.length;
+    }
+
+    function findCatch() {
+      for (const word of words.filter(w => w.settled)) {
+        for (let i = 0; i < word.display.length; i++) {
+          const slotX = word.x + i * (SLOT_SIZE + SLOT_GAP);
+          const slotCenter = slotX + SLOT_SIZE / 2;
+          if (
+            fallingLetter.y >= word.y - 8 &&
+            fallingLetter.y <= word.y + SLOT_SIZE + 8 &&
+            Math.abs(fallingLetter.x - slotCenter) < SLOT_SIZE / 2
+          ) {
+            return { word, index: i };
+          }
+        }
+      }
+      return null;
+    }
+
+    function resolveCatch() {
+      const hit = findCatch();
+
+      if (!hit) {
+        if (fallingLetter.y > HEIGHT + 20) {
+          lives--;
+          setMessage('Missed letter.', 'bad');
+          if (lives <= 0) {
+            gameOver = true;
+            setMessage('Game Over', 'bad');
+          } else {
+            spawnFallingLetter();
+          }
+        }
+        return;
+      }
+
+      const { word, index } = hit;
+
+      if (index === word.missingIndex && fallingLetter.char === word.neededLetter) {
+        word.display[index] = fallingLetter.char;
+        word.flash = 240;
+        score += 120 + word.fullWord.length * 10;
+        completed++;
+        level = 1 + Math.floor(completed / 5);
+        spawnInterval = Math.max(1200, 2600 - level * 120);
+        foundWords.unshift(word.fullWord);
+        foundWords = foundWords.slice(0, 16);
+        setMessage('Completed: ' + word.fullWord, 'good');
+        words = words.filter(w => w !== word);
+        centerSettledWords();
+        spawnFallingLetter();
+      } else {
+        lives--;
+        word.flash = 240;
+        setMessage(index === word.missingIndex ? 'Wrong letter.' : 'Hit the wrong slot.', 'bad');
+        if (lives <= 0) {
+          gameOver = true;
+          setMessage('Game Over', 'bad');
+        } else {
+          spawnFallingLetter();
+        }
+      }
+    }
+
+    function updateFallingLetter(delta) {
+      if (!fallingLetter) return;
+      fallingLetter.y += fallingLetter.vy * delta * 0.06;
+      resolveCatch();
+    }
+
+    function ensureWordFlow() {
+      if (words.length < 3) {
+        words.push(makeScrollingWord());
+      }
+    }
+
+    function drawBackground() {
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+      for (let y = 0; y < HEIGHT; y += 40) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+        ctx.beginPath();
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(WIDTH, y + 0.5);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(0, CATCH_Y - 20, WIDTH, LANE_HEIGHT + 26);
+    }
+
+    function drawWord(word, isActive) {
+      for (let i = 0; i < word.display.length; i++) {
+        const x = word.x + i * (SLOT_SIZE + SLOT_GAP);
+        const y = word.y;
+        const char = word.display[i];
+
+        ctx.fillStyle = isActive ? getComputedStyle(document.documentElement).getPropertyValue('--slot-active') : getComputedStyle(document.documentElement).getPropertyValue('--slot');
+        if (word.flash > 0) ctx.fillStyle = 'rgba(53, 208, 127, 0.9)';
+        ctx.fillRect(x, y, SLOT_SIZE, SLOT_SIZE);
+
+        ctx.strokeStyle = char === '_' ? '#ffcc66' : 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x + 1, y + 1, SLOT_SIZE - 2, SLOT_SIZE - 2);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 24px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(char, x + SLOT_SIZE / 2, y + SLOT_SIZE / 2 + 1);
+      }
+    }
+
+    function drawFallingLetter() {
+      if (!fallingLetter) return;
+      ctx.fillStyle = '#7c9cff';
+      ctx.beginPath();
+      ctx.arc(fallingLetter.x, fallingLetter.y, 22, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 24px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(fallingLetter.char, fallingLetter.x, fallingLetter.y + 1);
+    }
+
+    function drawUI() {
+      drawBackground();
+
+      const settled = words.filter(w => w.settled);
+      let settledIndex = 0;
+
+      for (const word of words) {
+        const isActive = word.settled && settledIndex === activeWordIndex;
+        drawWord(word, isActive);
+        if (word.settled) settledIndex++;
+      }
+
+      drawFallingLetter();
+
+      if (paused || gameOver) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 40px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(gameOver ? 'Game Over' : 'Paused', WIDTH / 2, HEIGHT / 2);
+      }
+    }
+
+    function updateStats() {
+      scoreEl.textContent = score;
+      levelEl.textContent = level;
+      clearedEl.textContent = completed;
+      livesEl.textContent = lives;
+      currentLetterEl.textContent = fallingLetter ? fallingLetter.char : '-';
+      foundWordsEl.innerHTML = foundWords.length
+        ? foundWords.map(word => `<span class="badge">${word}</span>`).join('')
+        : `<span class="small">No completed words yet</span>`;
+    }
+
+    function setMessage(text, type = '') {
+      messageEl.textContent = text;
+      messageEl.className = 'message';
+      if (type) messageEl.classList.add(type);
+    }
+
+    function restart() {
+      words = [makeScrollingWord(), makeScrollingWord()];
+      score = 0;
+      level = 1;
+      completed = 0;
+      lives = 3;
+      paused = false;
+      gameOver = false;
+      foundWords = [];
+      activeWordIndex = 0;
+      lastTime = 0;
+      spawnTimer = 0;
+      spawnInterval = 2600;
+      pauseBtn.textContent = 'Pause';
+      setMessage('');
+      spawnFallingLetter();
+      updateStats();
+      drawUI();
+    }
+
+    function update(time = 0) {
+      const delta = time - lastTime;
+      lastTime = time;
+
+      if (!paused && !gameOver) {
+        spawnTimer += delta;
+        if (spawnTimer >= spawnInterval) {
+          spawnTimer = 0;
+          words.push(makeScrollingWord());
+        }
+
+        ensureWordFlow();
+        updateWords(delta);
+        updateFallingLetter(delta);
+        updateStats();
+      }
+
+      drawUI();
+      requestAnimationFrame(update);
+    }
+
+    function togglePause() {
+      if (gameOver) return;
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+      setMessage(paused ? 'Paused' : '');
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft') moveActiveWord(-1);
+      else if (e.key === 'ArrowRight') moveActiveWord(1);
+      else if (e.key === 'ArrowDown' && fallingLetter) fallingLetter.vy = 7 + level * 0.4;
+      else if (e.key === 'Tab') {
+        e.preventDefault();
+        nextLane();
+      }
+      else if (e.key.toLowerCase() === 'p') togglePause();
+      else if (e.key.toLowerCase() === 'r') restart();
+    });
+
+    document.addEventListener('keyup', (e) => {
+      if (e.key === 'ArrowDown' && fallingLetter) {
+        fallingLetter.vy = 2.4 + level * 0.35;
+      }
+    });
+
+    restartBtn.addEventListener('click', restart);
+    pauseBtn.addEventListener('click', togglePause);
+
+    restart();
+    update();
+  </script>
+</body>
+</html>

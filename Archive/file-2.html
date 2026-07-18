@@ -1,0 +1,467 @@
+<script>
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+
+  const COLS = 10;
+  const ROWS = 20;
+  const CELL = 30;
+
+  const scoreEl = document.getElementById("score");
+  const levelEl = document.getElementById("level");
+  const linesEl = document.getElementById("lines");
+  const currentLetterEl = document.getElementById("currentLetter");
+  const nextLetterEl = document.getElementById("nextLetter");
+  const foundWordsEl = document.getElementById("foundWords");
+  const messageEl = document.getElementById("message");
+  const restartBtn = document.getElementById("restartBtn");
+  const pauseBtn = document.getElementById("pauseBtn");
+
+  const COLORS = {
+    A: "#ff6b6b", B: "#f06595", C: "#cc5de8", D: "#845ef7", E: "#5c7cfa",
+    F: "#339af0", G: "#22b8cf", H: "#20c997", I: "#51cf66", J: "#94d82d",
+    K: "#fcc419", L: "#ff922b", M: "#ffa8a8", N: "#74c0fc", O: "#8ce99a",
+    P: "#ffd43b", Q: "#e599f7", R: "#b197fc", S: "#63e6be", T: "#a9e34b",
+    U: "#ffe066", V: "#ffc078", W: "#c0eb75", X: "#f783ac", Y: "#91a7ff",
+    Z: "#66d9e8"
+  };
+
+  const DICTIONARY = new Set([
+    "CAT","DOG","SUN","MOON","STAR","BOOK","GAME","WORD","DROP","LINE","GRID",
+    "CODE","HTML","JAVA","CSS","PLAY","FUN","RUN","JUMP","STACK","BLOCK","ROW",
+    "TREE","BIRD","FIRE","WATER","EARTH","WIND","STONE","LIGHT","DARK","NOTE",
+    "SAND","WAVE","SHIP","TRAIN","PLANE","CAR","ROAD","PATH","MAP","HOME",
+    "FISH","DUCK","FROG","LION","TIGER","BEAR","MOUSE","HOUSE","GREEN","BLUE",
+    "RED","PINK","BLACK","WHITE","GRAY","GOLD","SILVER","RING","CLOUD","RAIN",
+    "SNOW","ICE","KING","QUEEN","APPLE","GRAPE","MELON","BREAD","CAKE","PIE",
+    "MILK","CHEESE","CHAIR","TABLE","PHONE","SCREEN","GLASS","PLANT","RIVER",
+    "LAKE","BRICK","ROBOT","LASER","SPACE","WORLD","HELLO","TEST","QUICK","SLOW",
+    "SMART","BRAIN","POWER","MAGIC","SPELL","SWORD","SHIELD","NORTH","SOUTH",
+    "EAST","WEST","SCORE","LEVEL","CLEAR","CHAIN","MATCH","ALPHA","BETA","OMEGA"
+  ]);
+
+  const letterBag = [
+    ..."EEEEEEEEEEEE",
+    ..."AAAAAAAA",
+    ..."IIIIIIII",
+    ..."OOOOOOOO",
+    ..."NNNNNN",
+    ..."RRRRRR",
+    ..."TTTTTT",
+    ..."LLLL",
+    ..."SSSS",
+    ..."UUUU",
+    ..."DDDD",
+    ..."GGG",
+    ..."BB",
+    ..."CC",
+    ..."MM",
+    ..."PP",
+    ..."FF",
+    ..."HH",
+    ..."VV",
+    ..."WW",
+    ..."YY",
+    ..."K",
+    ..."J",
+    ..."X",
+    ..."Q",
+    ..."Z"
+  ];
+
+  const SHAPES = [
+    [[0,0],[1,0],[0,1],[1,1]],     // O
+    [[-1,0],[0,0],[1,0],[2,0]],    // I
+    [[-1,0],[0,0],[1,0],[1,1]],    // J
+    [[-1,1],[-1,0],[0,0],[1,0]],   // L
+    [[0,0],[1,0],[-1,1],[0,1]],    // S
+    [[-1,0],[0,0],[0,1],[1,1]],    // Z
+    [[-1,0],[0,0],[1,0],[0,1]]     // T
+  ];
+
+  const DIRECTIONS = [
+    [1, 0],   // right
+    [0, 1],   // down
+    [1, 1],   // down-right
+    [1, -1],  // up-right
+    [-1, 0],  // left
+    [0, -1],  // up
+    [-1, -1], // up-left
+    [-1, 1]   // down-left
+  ];
+
+  let board = [];
+  let current = null;
+  let nextPiece = null;
+  let score = 0;
+  let level = 1;
+  let lines = 0;
+  let dropInterval = 700;
+  let lastTime = 0;
+  let dropCounter = 0;
+  let gameOver = false;
+  let paused = false;
+  let foundWords = [];
+
+  function randomLetter() {
+    return letterBag[Math.floor(Math.random() * letterBag.length)];
+  }
+
+  function randomPiece() {
+    const shape = SHAPES[Math.floor(Math.random() * SHAPES.length)].map(([x, y]) => ({ x, y }));
+    const letters = shape.map(() => randomLetter());
+    return { shape, letters };
+  }
+
+  function createBoard() {
+    return Array.from({ length: ROWS }, () => Array(COLS).fill(""));
+  }
+
+  function clonePiece(piece) {
+    return {
+      x: piece.x,
+      y: piece.y,
+      shape: piece.shape.map(c => ({ x: c.x, y: c.y })),
+      letters: [...piece.letters]
+    };
+  }
+
+  function spawnPiece() {
+    const pieceData = nextPiece || randomPiece();
+    nextPiece = randomPiece();
+
+    current = {
+      x: Math.floor(COLS / 2),
+      y: 1,
+      shape: pieceData.shape.map(c => ({ x: c.x, y: c.y })),
+      letters: [...pieceData.letters]
+    };
+
+    currentLetterEl.textContent = current.letters.join("");
+    nextLetterEl.textContent = nextPiece.letters.join("");
+
+    if (pieceCollides(current)) {
+      gameOver = true;
+      setMessage("Game Over", "bad");
+    }
+  }
+
+  function getPieceCells(piece) {
+    return piece.shape.map((cell, i) => ({
+      x: piece.x + cell.x,
+      y: piece.y + cell.y,
+      letter: piece.letters[i]
+    }));
+  }
+
+  function pieceCollides(piece) {
+    for (const cell of getPieceCells(piece)) {
+      if (cell.x < 0 || cell.x >= COLS || cell.y >= ROWS) return true;
+      if (cell.y >= 0 && board[cell.y][cell.x] !== "") return true;
+    }
+    return false;
+  }
+
+  function mergePiece() {
+    for (const cell of getPieceCells(current)) {
+      if (cell.y >= 0) {
+        board[cell.y][cell.x] = cell.letter;
+      }
+    }
+    resolveBoard();
+    spawnPiece();
+  }
+
+  function move(dx) {
+    if (gameOver || paused) return;
+    const test = clonePiece(current);
+    test.x += dx;
+    if (!pieceCollides(test)) current = test;
+  }
+
+  function drop() {
+    if (gameOver || paused) return;
+    const test = clonePiece(current);
+    test.y += 1;
+    if (!pieceCollides(test)) {
+      current = test;
+    } else {
+      mergePiece();
+    }
+  }
+
+  function hardDrop() {
+    if (gameOver || paused) return;
+    const test = clonePiece(current);
+    while (!pieceCollides(test)) {
+      current = clonePiece(test);
+      test.y += 1;
+    }
+    mergePiece();
+  }
+
+  function rotatePiece() {
+    if (gameOver || paused) return;
+
+    const rotated = clonePiece(current);
+    rotated.shape = rotated.shape.map(cell => ({
+      x: -cell.y,
+      y: cell.x
+    }));
+
+    if (!pieceCollides(rotated)) {
+      current = rotated;
+      return;
+    }
+
+    // simple wall kicks
+    const kicks = [-1, 1, -2, 2];
+    for (const kick of kicks) {
+      const kicked = clonePiece(rotated);
+      kicked.x += kick;
+      if (!pieceCollides(kicked)) {
+        current = kicked;
+        return;
+      }
+    }
+  }
+
+  function applyGravity() {
+    let moved = false;
+
+    for (let x = 0; x < COLS; x++) {
+      const letters = [];
+      for (let y = ROWS - 1; y >= 0; y--) {
+        if (board[y][x] !== "") letters.push(board[y][x]);
+      }
+
+      for (let y = 0; y < ROWS; y++) {
+        board[y][x] = "";
+      }
+
+      for (let i = 0; i < letters.length; i++) {
+        const newY = ROWS - 1 - i;
+        board[newY][x] = letters[i];
+      }
+    }
+
+    return moved;
+  }
+
+  function inBounds(x, y) {
+    return x >= 0 && x < COLS && y >= 0 && y < ROWS;
+  }
+
+  function findAllWords() {
+    const matches = [];
+
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        if (!board[y][x]) continue;
+
+        for (const [dx, dy] of DIRECTIONS) {
+          let word = "";
+          let cells = [];
+
+          for (let len = 1; len <= 8; len++) {
+            const nx = x + dx * (len - 1);
+            const ny = y + dy * (len - 1);
+
+            if (!inBounds(nx, ny)) break;
+            if (!board[ny][nx]) break;
+
+            word += board[ny][nx];
+            cells.push([nx, ny]);
+
+            if (word.length >= 3 && DICTIONARY.has(word)) {
+              matches.push({
+                word,
+                cells: [...cells]
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // dedupe identical matches by coordinates + word
+    const seen = new Set();
+    return matches.filter(match => {
+      const key = match.word + ":" + match.cells.map(([x, y]) => `${x},${y}`).join("|");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function resolveBoard() {
+    let chain = 0;
+
+    while (true) {
+      const matches = findAllWords();
+      if (matches.length === 0) break;
+
+      chain++;
+
+      const cellsToClear = new Set();
+      const wordsThisPass = [];
+
+      for (const match of matches) {
+        wordsThisPass.push(match.word);
+        for (const [x, y] of match.cells) {
+          cellsToClear.add(`${x},${y}`);
+        }
+      }
+
+      for (const key of cellsToClear) {
+        const [x, y] = key.split(",").map(Number);
+        board[y][x] = "";
+      }
+
+      applyGravity();
+
+      const uniqueWords = [...new Set(wordsThisPass)];
+      foundWords.unshift(...uniqueWords);
+      foundWords = foundWords.slice(0, 20);
+
+      const gained = cellsToClear.size * 12 * chain + uniqueWords.length * 30;
+      score += gained;
+      lines += uniqueWords.length;
+      level = 1 + Math.floor(score / 500);
+      dropInterval = Math.max(140, 700 - (level - 1) * 40);
+
+      setMessage(
+        `${chain > 1 ? "Chain x" + chain + " - " : ""}Cleared: ${uniqueWords.join(", ")} (+${gained})`,
+        "good"
+      );
+
+      updateUI();
+    }
+  }
+
+  function drawCell(x, y, letter, alpha = 1) {
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = letter ? (COLORS[letter] || "#888") : "#2b3357";
+    ctx.fillRect(x * CELL, y * CELL, CELL - 1, CELL - 1);
+
+    if (letter) {
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 18px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(letter, x * CELL + CELL / 2, y * CELL + CELL / 2 + 1);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawBoard() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        drawCell(x, y, board[y][x]);
+      }
+    }
+
+    if (current && !gameOver) {
+      for (const cell of getPieceCells(current)) {
+        if (cell.y >= 0) drawCell(cell.x, cell.y, cell.letter);
+      }
+    }
+
+    if (paused) {
+      drawOverlay("Paused");
+    } else if (gameOver) {
+      drawOverlay("Game Over");
+    }
+  }
+
+  function drawOverlay(text) {
+    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 32px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+  }
+
+  function updateUI() {
+    scoreEl.textContent = score;
+    levelEl.textContent = level;
+    linesEl.textContent = lines;
+    currentLetterEl.textContent = current ? current.letters.join("") : "-";
+    nextLetterEl.textContent = nextPiece ? nextPiece.letters.join("") : "-";
+
+    foundWordsEl.innerHTML = foundWords.length
+      ? foundWords.map(word => `<span class="badge">${word}</span>`).join("")
+      : `<span class="small">No words yet</span>`;
+  }
+
+  function setMessage(text, type = "") {
+    messageEl.textContent = text;
+    messageEl.className = "message";
+    if (type) messageEl.classList.add(type);
+  }
+
+  function togglePause() {
+    if (gameOver) return;
+    paused = !paused;
+    pauseBtn.textContent = paused ? "Resume" : "Pause";
+    setMessage(paused ? "Paused" : "");
+  }
+
+  function restart() {
+    board = createBoard();
+    current = null;
+    nextPiece = randomPiece();
+    score = 0;
+    level = 1;
+    lines = 0;
+    dropInterval = 700;
+    dropCounter = 0;
+    lastTime = 0;
+    gameOver = false;
+    paused = false;
+    foundWords = [];
+    pauseBtn.textContent = "Pause";
+    setMessage("");
+    spawnPiece();
+    updateUI();
+    drawBoard();
+  }
+
+  function update(time = 0) {
+    const delta = time - lastTime;
+    lastTime = time;
+
+    if (!paused && !gameOver) {
+      dropCounter += delta;
+      if (dropCounter > dropInterval) {
+        drop();
+        dropCounter = 0;
+      }
+    }
+
+    drawBoard();
+    requestAnimationFrame(update);
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (!current && !gameOver) return;
+
+    if (e.key === "ArrowLeft") move(-1);
+    else if (e.key === "ArrowRight") move(1);
+    else if (e.key === "ArrowDown") drop();
+    else if (e.key === "ArrowUp") rotatePiece();
+    else if (e.key === " ") hardDrop();
+    else if (e.key.toLowerCase() === "p") togglePause();
+    else if (e.key.toLowerCase() === "r") restart();
+  });
+
+  restartBtn.addEventListener("click", restart);
+  pauseBtn.addEventListener("click", togglePause);
+
+  restart();
+  update();
+</script>
