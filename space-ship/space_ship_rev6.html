@@ -1,0 +1,1214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SPACE SHIP // VECTOR FLIGHT</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%;
+    background:#000;
+    overflow:hidden;
+    font-family:'Courier New', monospace;
+  }
+  #wrap {
+    position:relative;
+    width:100vw; height:100vh;
+    display:flex; align-items:center; justify-content:center;
+    background:radial-gradient(ellipse at center, #0c0c0c 0%, #000000 100%);
+  }
+  canvas {
+    background:#000;
+    box-shadow: 0 0 40px rgba(255,255,255,0.16), inset 0 0 80px rgba(255,255,255,0.05);
+    border:2px solid #3a3a3a;
+    cursor:crosshair;
+    /* rev6: the canvas has grown taller across revisions (now 900x920) to
+       fit the bigger console -- scale it down to fit smaller screens while
+       keeping its aspect ratio; mouse coordinate mapping already accounts
+       for CSS size differing from the canvas's internal resolution */
+    max-width:96vw;
+    max-height:94vh;
+    width:auto;
+    height:auto;
+  }
+  /* CRT scanline overlay -- same technique as the other arcade games in
+     this repo, just left color-neutral since everything here is white */
+  #wrap::after {
+    content:'';
+    position:absolute;
+    top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    width:900px; height:920px;
+    pointer-events:none;
+    background:repeating-linear-gradient(
+      to bottom,
+      rgba(0,0,0,0) 0px,
+      rgba(0,0,0,0) 1px,
+      rgba(0,0,0,0.18) 2px,
+      rgba(0,0,0,0.18) 3px
+    );
+    mix-blend-mode:multiply;
+  }
+  #centerMsg {
+    position:absolute;
+    top:37%; left:50%;
+    transform:translate(-50%,-50%);
+    text-align:center;
+    color:#fff;
+    text-shadow:0 0 12px #fff, 0 0 24px rgba(255,255,255,0.6);
+    pointer-events:none;
+    user-select:none;
+    /* rev4: the wider canopy dividers can cross right through this text at
+       some scroll positions -- a translucent backdrop keeps it legible
+       against whatever's on the canvas behind it */
+    background:rgba(0,0,0,0.6);
+    padding:26px 40px;
+    border-radius:10px;
+  }
+  #centerMsg h1 {
+    font-size:44px;
+    letter-spacing:10px;
+    margin-bottom:14px;
+    animation: flicker 2.2s infinite;
+  }
+  #centerMsg p {
+    font-size:15px;
+    letter-spacing:2px;
+    color:#cfcfcf;
+    text-shadow:0 0 6px rgba(255,255,255,0.7);
+    margin-top:6px;
+  }
+  #centerMsg .small {
+    font-size:12px;
+    color:#888;
+    margin-top:18px;
+  }
+  #centerMsg .heading {
+    font-size:24px;
+    letter-spacing:5px;
+    margin-top:20px;
+    margin-bottom:8px;
+  }
+  #centerMsg .digits {
+    display:flex;
+    justify-content:center;
+    gap:14px;
+    margin:20px 0;
+  }
+  #centerMsg .digitBox {
+    width:54px; height:70px;
+    border:2px solid rgba(255,255,255,0.45);
+    border-radius:6px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:34px; font-weight:bold;
+  }
+  #centerMsg .digitBox.active {
+    border-color:#fff;
+    box-shadow:0 0 14px rgba(255,255,255,0.7);
+  }
+  #centerMsg .btn {
+    display:inline-block;
+    margin-top:16px;
+    padding:10px 26px;
+    border:2px solid rgba(255,255,255,0.6);
+    border-radius:6px;
+    font-size:13px;
+    letter-spacing:3px;
+    box-shadow:0 0 10px rgba(255,255,255,0.15);
+  }
+  #centerMsg .lb {
+    display:inline-block;
+    text-align:left;
+    min-width:260px;
+    margin-top:4px;
+  }
+  #centerMsg .lbrow {
+    display:flex;
+    justify-content:space-between;
+    font-size:11px;
+    padding:2px 0;
+    color:#ccc;
+  }
+  #centerMsg .lbrow.top { color:#fff; text-shadow:0 0 6px rgba(255,255,255,0.8); }
+  @keyframes flicker {
+    0%, 19%, 21%, 23%, 54%, 56%, 100% { opacity:1; }
+    20%, 22%, 55% { opacity:0.6; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="900" height="920"></canvas>
+  <div id="centerMsg"></div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const centerMsg = document.getElementById('centerMsg');
+
+// ---------- LAYOUT ----------
+const VIEW_H = 520;              // forward viewport occupies the top ~75%
+const CONSOLE_Y = VIEW_H;        // cockpit console fills the rest
+const CONSOLE_H = H - VIEW_H;
+const CENTER_X = W/2;
+// rev2: the vanishing point (where asteroids and bullets both converge at
+// infinite distance) sits 60% up from the bottom of the forward viewport,
+// not dead-center -- per request.
+const CENTER_Y = VIEW_H * 0.4;
+
+// ---------- PROJECTION / FLIGHT TUNING ----------
+const FOV_SCALE = 500;
+const STEER_SPEED = 190;     // rev6: 2x more sensitive -- world units/sec while a direction is held, unbounded, no max deflection
+const STEER_LAG_RATE = 4.5;  // rev5: how fast the ship's actual heading eases toward the aim direction -- lower = more lag
+// rev3: 2x rev2's already-4x'd speed. Min/max scaled with the default to
+// keep the same relative slow/fast range.
+const SPEED_DEFAULT = 144, SPEED_MIN = 64, SPEED_MAX = 336;
+const SPEED_ACCEL = 220;     // units/sec^2 while M/B held -- rev3: speed now PERSISTS after release, no decay back to default
+const MAX_ROLL_DEG = 7;      // cosmetic banking tilt at full steering deflection
+const SPAWN_Z_MIN = 420, SPAWN_Z_MAX = 700;
+const FIELD_SPAN = 150;      // lateral spread rocks spawn across
+const DIRECT_COURSE_CHANCE = 0.35; // rev6: chance a new spawn is biased onto a collision course
+const DIRECT_COURSE_SPAN = 26;     // rev6: how tight that collision-course spawn radius is
+const DEFLECT_CHANCE = 0.7;  // rev6: chance a hit fragment gets flung clear on a radical tangent
+const DEFLECT_KICK_MIN = 30, DEFLECT_KICK_MAX = 46; // rev6: sideways speed for a deflected fragment
+const TARGET_COUNT = 16;
+const COLLIDE_Z = 8;         // z at which an unshot rock is checked for a player hit
+const CULL_Z = -30;          // z at which a passed rock is recycled
+const PLAYER_HIT_RADIUS = 11;
+const FIRE_COOLDOWN = 0.16;
+const HEAT_PER_SHOT = 0.14, HEAT_COOL_RATE = 0.4, HEAT_LOCKOUT = 1.0, HEAT_READY_AGAIN = 0.82;
+const ENGAGE_Z_MIN = 4, ENGAGE_Z_MAX = 650; // basically the whole visible flight -- if you can see it and it's in your sights, you can hit it
+const HULL_MAX = 4;
+const LIVES_START = 3;
+const EXTRA_LIFE_SCORE = 10000; // same nextLifeScore pattern as asteroids-green-zc-controls.html
+const SCORE_FOR_TIER = {3:100, 2:175, 1:250}; // rev3: big rock 100, medium 175 (midpoint), small 250
+const ASTEROID_RADIUS = {3:9, 2:5.2, 1:2.8};
+const MOUSE_DEADZONE = 20;   // px around viewport center with no steering input
+const CROSSHAIR_LAG_RATE = 3.2; // rev6: increased -- the crosshair now visibly trails the raw cursor, not instant
+
+function rand(a,b){ return a + Math.random()*(b-a); }
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+function lerp(a,b,t){ return a + (b-a)*t; }
+// rev4: maps a mouse-vs-center offset to a [-1,1] steering axis, with a
+// deadzone near center and full magnitude at `range` pixels out
+function axisInput(d, range){
+  if(Math.abs(d) < MOUSE_DEADZONE) return 0;
+  const mag = clamp((Math.abs(d)-MOUSE_DEADZONE)/(range-MOUSE_DEADZONE), 0, 1);
+  return Math.sign(d)*mag;
+}
+// rev5: where the cannon/crosshair actually points. rev6: this is now the
+// LAGGED cursor position (aimIndX/Y, eased toward the raw mouse each
+// frame in update()), clamped to the forward viewport so it can't wander
+// into the console.
+function aimPoint(){
+  return { x: clamp(aimIndX, 0, W), y: clamp(aimIndY, 0, VIEW_H) };
+}
+
+// ---------- AUDIO ----------
+// Same beep()-based blip SFX pattern as asteroids-green-zc-controls.html.
+let audioCtx;
+function ensureAudio(){
+  if(!audioCtx){ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); }
+  if(audioCtx.state === 'suspended'){ audioCtx.resume(); }
+}
+function beep(freq, dur, type, vol, delay){
+  if(!audioCtx) return;
+  type = type||'square'; vol = vol===undefined?0.05:vol; delay = delay||0;
+  const startAt = audioCtx.currentTime + delay;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.value = freq;
+  g.gain.value = vol;
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(startAt);
+  g.gain.exponentialRampToValueAtTime(0.0001, startAt + dur);
+  o.stop(startAt + dur);
+}
+function sfxFire(){ beep(920, 0.05, 'square', 0.05); }
+function sfxHitBig(){ beep(90, 0.3, 'sawtooth', 0.09); }
+function sfxHitSmall(){ beep(220, 0.18, 'sawtooth', 0.07); }
+function sfxDestroyed(){ beep(340, 0.14, 'sawtooth', 0.06); }
+function sfxHullHit(){ beep(70, 0.5, 'sawtooth', 0.12); }
+function sfxOverheat(){ beep(160, 0.2, 'square', 0.06); }
+function sfxStart(){
+  beep(220, 0.08, 'square', 0.05, 0);
+  beep(440, 0.08, 'square', 0.05, 0.08);
+  beep(660, 0.12, 'square', 0.05, 0.16);
+}
+function sfxGameOver(){
+  [300,240,180,120].forEach((f,i)=> beep(f, 0.22, 'sawtooth', 0.08, i*0.15));
+}
+function sfxSelect(){ beep(660, 0.04, 'sine', 0.06); }
+function sfxExtraLife(){ beep(1200, 0.15, 'sine', 0.06); }
+
+// ---------- STATE ----------
+// rev3: 'nameentry' sits between 'menu' and 'playing'
+let state = 'menu'; // menu | nameentry | playing | gameover
+let asteroids = [], tracers = [], particles = [];
+let shipOffsetX = 0, shipOffsetY = 0;
+let forwardSpeed = SPEED_DEFAULT;
+let roll = 0; // current banking tilt, radians
+let headingIndX = 0, headingIndY = 0; // eased steering-direction needle for the HEADING gauge
+let weaponHeat = 0, overheated = false, fireCooldown = 0;
+let hull = HULL_MAX, score = 0;
+let lives = LIVES_START, nextLifeScore = EXTRA_LIFE_SCORE;
+let rocksDestroyed = 0;
+let hitFlash = 0, shake = 0;
+let invuln = 0;
+// rev4: left/right/up/down steering comes from the mouse now (see INPUT);
+// only the speed keys remain boolean key state
+let keys = { slow:false, fast:false };
+let mouseHeld = false;
+let mouseX = CENTER_X, mouseY = CENTER_Y;
+let aimIndX = CENTER_X, aimIndY = CENTER_Y; // rev6: eased crosshair position, trails mouseX/Y
+let lastTime = 0;
+
+// rev3: 3-digit callsign entered once per session, keyboard-driven (no
+// touch/mouse targets in this game) -- reused on every "NEW GAME" restart
+let playerDigits = [0,0,0];
+let activeDigitIndex = 0;
+
+// rev3: local top-10 leaderboard, same idea as the word game's (see
+// word-game-scores/README.md for why this can't push to the repo itself)
+const LEADERBOARD_KEY = 'spaceShipLeaderboard';
+function loadLeaderboard(){
+  try{
+    const raw = localStorage.getItem(LEADERBOARD_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  }catch(e){ return []; }
+}
+function saveLeaderboard(list){
+  try{ localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(list)); }catch(e){}
+}
+function recordScore(name, finalScore){
+  const list = loadLeaderboard();
+  list.push({ name, score: finalScore, date: new Date().toISOString() });
+  list.sort((a,b)=>b.score-a.score);
+  const top10 = list.slice(0,10);
+  saveLeaderboard(top10);
+  return top10;
+}
+let leaderboard = loadLeaderboard();
+
+const stars = [];
+for(let i=0;i<70;i++){
+  stars.push({ x:rand(0,W), y:rand(0,VIEW_H), r:rand(0.5,1.5), phase:rand(0,Math.PI*2) });
+}
+
+// ---------- ASTEROID FIELD ----------
+function makeShape(){
+  const n = Math.floor(rand(8,13));
+  const offsets = [];
+  for(let i=0;i<n;i++) offsets.push(rand(0.75,1.25));
+  return offsets;
+}
+function spawnAsteroid(tier, z){
+  // rev2: spawn relative to the ship's CURRENT lateral position, not a
+  // fixed world origin -- steering is unbounded now, so the field has to
+  // keep recentering around wherever the player has drifted to, or a long
+  // run in one direction would fly you clean out of the asteroid field.
+  // rev6: a chunk of spawns are biased tight around the ship's position
+  // instead of spread across the full field -- genuine collision-course
+  // rocks that need to be dodged or shot, not just scenery passing by.
+  const directCourse = Math.random() < DIRECT_COURSE_CHANCE;
+  const spanX = directCourse ? DIRECT_COURSE_SPAN : FIELD_SPAN;
+  const spanY = directCourse ? DIRECT_COURSE_SPAN*0.7 : FIELD_SPAN*0.7;
+  asteroids.push({
+    x: shipOffsetX + rand(-spanX, spanX),
+    y: shipOffsetY + rand(-spanY, spanY),
+    z: z===undefined ? rand(SPAWN_Z_MIN, SPAWN_Z_MAX) : z,
+    vx: rand(-3,3), vy: rand(-3,3),
+    tier,
+    worldRadius: ASTEROID_RADIUS[tier],
+    angle: rand(0, Math.PI*2),
+    spin: rand(-0.6, 0.6),
+    offsets: makeShape(),
+    checkedCollision: false,
+    trail: [] // rev6: fresh motion trail, builds up from this rock's own creation point
+  });
+}
+function maintainField(){
+  while(asteroids.length < TARGET_COUNT){
+    spawnAsteroid(3, rand(SPAWN_Z_MAX*0.7, SPAWN_Z_MAX));
+  }
+}
+
+// Projects a world point to screen space, including the cosmetic banking
+// roll -- baked in here (not via ctx.rotate) so hit-testing and rendering
+// always agree on exactly where something appears.
+function project(a){
+  const rx = (a.x - shipOffsetX) * FOV_SCALE / a.z;
+  const ry = (a.y - shipOffsetY) * FOV_SCALE / a.z;
+  const cosR = Math.cos(roll), sinR = Math.sin(roll);
+  return {
+    x: CENTER_X + rx*cosR - ry*sinR,
+    y: CENTER_Y + rx*sinR + ry*cosR,
+    r: a.worldRadius * FOV_SCALE / a.z
+  };
+}
+
+// ---------- GAME RESET ----------
+function resetGame(){
+  asteroids = []; tracers = []; particles = [];
+  shipOffsetX = 0; shipOffsetY = 0;
+  forwardSpeed = SPEED_DEFAULT;
+  roll = 0;
+  headingIndX = 0; headingIndY = 0;
+  aimIndX = mouseX; aimIndY = mouseY;
+  weaponHeat = 0; overheated = false; fireCooldown = 0;
+  mouseHeld = false;
+  hull = HULL_MAX; score = 0;
+  lives = LIVES_START; nextLifeScore = EXTRA_LIFE_SCORE;
+  rocksDestroyed = 0;
+  hitFlash = 0; shake = 0;
+  invuln = 60/60; // brief grace on spawn
+  maintainField();
+}
+function startGame(){
+  ensureAudio();
+  if(state !== 'playing'){
+    resetGame();
+    state = 'playing';
+    centerMsg.style.display = 'none';
+    sfxStart();
+  }
+}
+
+// ---------- MENU / NAME-ENTRY / GAME-OVER SCREENS (DOM overlay) ----------
+function leaderboardHTML(){
+  if(leaderboard.length===0) return '<p class="small">NO SCORES YET</p>';
+  return '<div class="lb">' + leaderboard.slice(0,10).map((e,i)=>
+    '<div class="lbrow' + (i===0?' top':'') + '"><span>' + (i+1) + '. ' + e.name + '</span><span>' +
+    String(e.score).padStart(6,'0') + '</span></div>'
+  ).join('') + '</div>';
+}
+function renderTitleScreen(){
+  centerMsg.innerHTML =
+    '<h1>SPACE SHIP</h1>' +
+    '<p>MOUSE AIMS THE CANNON — SHIP EASES TOWARD YOUR AIM</p>' +
+    '<p>CLICK FIRES, HOLD FOR MAX RATE — STEERING LOCKS WHILE FIRING</p>' +
+    '<p>ARROW UP / DOWN — FASTER / SLOWER</p>' +
+    '<p class="small">PRESS ENTER OR CLICK TO BEGIN</p>' +
+    '<div class="heading">TOP SCORES</div>' +
+    leaderboardHTML();
+  centerMsg.style.display = 'block';
+}
+function renderNameEntry(){
+  centerMsg.innerHTML =
+    '<div class="heading">ENTER CALLSIGN</div>' +
+    '<p class="small">ARROW UP/DOWN CHANGE DIGIT &nbsp; LEFT/RIGHT CHANGE SLOT &nbsp; CLICK TO CONFIRM</p>' +
+    '<div class="digits">' + playerDigits.map((d,i)=>
+      '<div class="digitBox' + (i===activeDigitIndex?' active':'') + '">' + d + '</div>'
+    ).join('') + '</div>';
+  centerMsg.style.display = 'block';
+}
+function moveDigitSlot(dir){
+  activeDigitIndex = clamp(activeDigitIndex+dir, 0, 2);
+  sfxSelect();
+  renderNameEntry();
+}
+function cycleDigit(dir){
+  playerDigits[activeDigitIndex] = ((playerDigits[activeDigitIndex]+dir)%10+10)%10;
+  sfxSelect();
+  renderNameEntry();
+}
+function confirmNameEntry(){
+  startGame();
+}
+function showGameOver(){
+  centerMsg.innerHTML =
+    '<h1>HULL BREACH</h1>' +
+    '<p>' + playerDigits.join('') + ' — FINAL SCORE: ' + score + '</p>' +
+    '<div class="btn">NEW GAME</div>' +
+    '<p class="small">PRESS ENTER OR CLICK TO FLY AGAIN</p>' +
+    '<div class="heading">TOP SCORES</div>' +
+    leaderboardHTML();
+  centerMsg.style.display = 'block';
+}
+
+// ---------- INPUT ----------
+// rev4: mouse steers (position relative to the viewport center) and fires
+// (click; holding down gives max cooldown-limited rate, no toggle). Arrow
+// Up/Down are the only keyboard gameplay control now (speed) -- the same
+// arrow keys double as name-entry navigation while state==='nameentry',
+// same dual-purpose pattern rev3 used for A/D/W/X.
+const PREVENT_CODES = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Enter'];
+
+function handlePrimaryAction(){
+  if(state==='menu'){
+    ensureAudio();
+    state = 'nameentry';
+    renderNameEntry();
+    sfxSelect();
+  } else if(state==='nameentry'){
+    confirmNameEntry();
+  } else if(state==='gameover'){
+    startGame();
+  }
+}
+
+window.addEventListener('keydown', (e)=>{
+  if(PREVENT_CODES.includes(e.code)) e.preventDefault();
+  if(e.code==='ArrowUp') keys.fast = true;
+  if(e.code==='ArrowDown') keys.slow = true;
+
+  if(!e.repeat){
+    if(state==='nameentry'){
+      if(e.code==='ArrowLeft') moveDigitSlot(-1);
+      if(e.code==='ArrowRight') moveDigitSlot(1);
+      if(e.code==='ArrowUp') cycleDigit(1);
+      if(e.code==='ArrowDown') cycleDigit(-1);
+    }
+    if(e.code==='Enter') handlePrimaryAction();
+  }
+});
+window.addEventListener('keyup', (e)=>{
+  if(e.code==='ArrowUp') keys.fast = false;
+  if(e.code==='ArrowDown') keys.slow = false;
+});
+
+canvas.addEventListener('mousemove', (e)=>{
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width/rect.width, scaleY = canvas.height/rect.height;
+  mouseX = (e.clientX-rect.left)*scaleX;
+  mouseY = (e.clientY-rect.top)*scaleY;
+});
+canvas.addEventListener('mouseleave', ()=>{ mouseX = CENTER_X; mouseY = CENTER_Y; });
+canvas.addEventListener('mousedown', (e)=>{
+  if(e.button!==0) return;
+  ensureAudio();
+  mouseHeld = true;
+});
+window.addEventListener('mouseup', (e)=>{
+  if(e.button!==0) return;
+  mouseHeld = false;
+});
+canvas.addEventListener('click', handlePrimaryAction);
+centerMsg.addEventListener('click', handlePrimaryAction);
+
+// ---------- FIRING ----------
+function spawnParticles(x,y,count,speedMax){
+  for(let i=0;i<count;i++){
+    const ang = rand(0,Math.PI*2);
+    const spd = rand(0.5, speedMax);
+    particles.push({
+      x, y,
+      vx: Math.cos(ang)*spd, vy: Math.sin(ang)*spd,
+      life: rand(20,50), maxLife:50
+    });
+  }
+}
+
+function breakAsteroid(a, index){
+  const p = project(a);
+  // rev3: bigger, denser white-dot explosion bursts
+  const burstCount = a.tier===3 ? 30 : a.tier===2 ? 20 : 14;
+  spawnParticles(p.x, p.y, burstCount, a.tier+1.5);
+  score += SCORE_FOR_TIER[a.tier];
+  rocksDestroyed++;
+  if(score >= nextLifeScore){
+    lives++;
+    nextLifeScore += EXTRA_LIFE_SCORE;
+    sfxExtraLife();
+  }
+  if(a.tier===3) sfxHitBig(); else if(a.tier===2) sfxHitSmall(); else sfxDestroyed();
+
+  if(a.tier > 1){
+    // rev6: each fragment independently rolls whether it gets flung clear
+    // on a radical tangent (DEFLECT_CHANCE, ~70%) or keeps heading roughly
+    // toward the ship (the other 30%) -- hitting a rock once USUALLY
+    // clears the danger from its pieces, but not always.
+    const relX = a.x - shipOffsetX, relY = a.y - shipOffsetY;
+    const dist = Math.hypot(relX, relY) || 1;
+    const perpX = -relY/dist, perpY = relX/dist;
+    for(let i=0;i<2;i++){
+      const deflect = Math.random() < DEFLECT_CHANCE;
+      let vx, vy;
+      if(deflect){
+        const dir = i===0 ? 1 : -1; // send the pair apart, opposite tangents
+        const kick = rand(DEFLECT_KICK_MIN, DEFLECT_KICK_MAX);
+        vx = perpX*kick*dir + rand(-4,4);
+        vy = perpY*kick*dir + rand(-4,4);
+      } else {
+        vx = a.vx + rand(-3,3);
+        vy = a.vy + rand(-3,3);
+      }
+      asteroids.push({
+        x:a.x, y:a.y, z:a.z,
+        vx, vy,
+        tier: a.tier-1,
+        worldRadius: ASTEROID_RADIUS[a.tier-1],
+        angle: rand(0,Math.PI*2), spin: rand(-1,1),
+        offsets: makeShape(),
+        checkedCollision: false,
+        trail: [] // rev6: fresh trail, doesn't inherit the parent's history
+      });
+    }
+  }
+  asteroids.splice(index,1);
+  maintainField();
+}
+
+function fire(){
+  if(state!=='playing' || overheated) return;
+  if(fireCooldown > 0) return;
+  fireCooldown = FIRE_COOLDOWN;
+  weaponHeat = Math.min(HEAT_LOCKOUT, weaponHeat + HEAT_PER_SHOT);
+  if(weaponHeat >= HEAT_LOCKOUT){ overheated = true; sfxOverheat(); }
+  sfxFire();
+
+  // rev5: the cannon aims wherever the cursor is, not a fixed center --
+  // hit test is the nearest asteroid inside a cone around the CURSOR.
+  const aim = aimPoint();
+  let best = null, bestIndex = -1, bestZ = Infinity;
+  for(let i=0;i<asteroids.length;i++){
+    const a = asteroids[i];
+    if(a.z < ENGAGE_Z_MIN || a.z > ENGAGE_Z_MAX) continue;
+    const p = project(a);
+    const dx = p.x-aim.x, dy = p.y-aim.y;
+    const coneR = p.r*1.3 + 10;
+    if(Math.hypot(dx,dy) <= coneR && a.z < bestZ){
+      best = p; bestIndex = i; bestZ = a.z;
+    }
+  }
+
+  const startX = CENTER_X, startY = VIEW_H - 18;
+  // rev5: the tracer always travels to the cursor position, hit or miss
+  tracers.push({
+    t:0, dur:0.15,
+    startX, startY,
+    endX: aim.x,
+    endY: aim.y
+  });
+
+  if(best) breakAsteroid(asteroids[bestIndex], bestIndex);
+}
+
+// ---------- UPDATE ----------
+function update(dt){
+  if(state !== 'playing'){ return; }
+
+  // rev6: the crosshair trails the raw cursor with a lag, independent of
+  // the firing/steering-lock state below -- it keeps easing toward the
+  // mouse even mid-burst, so a held-fire sweep still catches up smoothly.
+  aimIndX += (mouseX - aimIndX) * Math.min(1, dt*CROSSHAIR_LAG_RATE);
+  aimIndY += (mouseY - aimIndY) * Math.min(1, dt*CROSSHAIR_LAG_RATE);
+
+  // rev5: mouse position relative to the horizon/vanishing point (CENTER)
+  // is the AIM direction. Steering only responds to it while NOT firing --
+  // holding the cannon down immobilises the ship's heading, so aiming and
+  // thrusting into a turn are a deliberate either/or each moment, not
+  // simultaneous. The ship's actual heading also EASES toward the aim
+  // direction (a slight lag) rather than snapping instantly, like a jet
+  // catching up to where you're looking.
+  if(!mouseHeld){
+    const steerDirX = axisInput(mouseX-CENTER_X, W/2);
+    const steerDirY = axisInput(mouseY-CENTER_Y, VIEW_H/2);
+    headingIndX += (steerDirX - headingIndX) * Math.min(1, dt*STEER_LAG_RATE);
+    headingIndY += (steerDirY - headingIndY) * Math.min(1, dt*STEER_LAG_RATE);
+    shipOffsetX += headingIndX*STEER_SPEED*dt;
+    shipOffsetY += headingIndY*STEER_SPEED*dt;
+
+    const targetRoll = -headingIndX * (MAX_ROLL_DEG*Math.PI/180);
+    roll += (targetRoll - roll) * Math.min(1, dt*6);
+  }
+
+  // rev3: speed is persistent/incremental -- Arrow Up/Down nudge it toward
+  // the clamps and it STAYS there on release, no decay back to a cruise
+  // default. Unaffected by firing -- only steering immobilises.
+  if(keys.fast) forwardSpeed = Math.min(SPEED_MAX, forwardSpeed + SPEED_ACCEL*dt);
+  if(keys.slow) forwardSpeed = Math.max(SPEED_MIN, forwardSpeed - SPEED_ACCEL*dt);
+
+  if(fireCooldown > 0) fireCooldown -= dt;
+  // rev4: no more toggled auto-fire -- holding the mouse button just
+  // fires every frame the cooldown allows, which IS max rate of fire.
+  if(mouseHeld) fire();
+
+  if(overheated){
+    weaponHeat = Math.max(0, weaponHeat - HEAT_COOL_RATE*dt);
+    if(weaponHeat <= HEAT_READY_AGAIN) overheated = false;
+  } else {
+    weaponHeat = Math.max(0, weaponHeat - HEAT_COOL_RATE*0.5*dt);
+  }
+
+  if(invuln > 0) invuln -= dt;
+
+  for(let i=asteroids.length-1; i>=0; i--){
+    const a = asteroids[i];
+    a.z -= forwardSpeed*dt;
+    a.x += a.vx*dt; a.y += a.vy*dt;
+    a.angle += a.spin*dt;
+
+    // rev6: sample a motion-trail point each frame (screen space, so it
+    // naturally follows the same perspective the rock itself is drawn
+    // with) -- capped short so it reads as a trail, not a permanent streak.
+    // Close to the vanishing point, small world-space drift gets hugely
+    // amplified on screen by the perspective divide -- if a sample would
+    // jump further than a rock-sized distance, restart the trail instead
+    // of drawing one long zigzag streak across the screen.
+    const tp = project(a);
+    const lastPt = a.trail[a.trail.length-1];
+    if(lastPt && Math.hypot(tp.x-lastPt.x, tp.y-lastPt.y) > Math.max(30, tp.r*4)){
+      a.trail.length = 0;
+    }
+    a.trail.push({x:tp.x, y:tp.y});
+    if(a.trail.length > 14) a.trail.shift();
+
+    if(!a.checkedCollision && a.z <= COLLIDE_Z){
+      a.checkedCollision = true;
+      const relX = a.x - shipOffsetX, relY = a.y - shipOffsetY;
+      if(invuln<=0 && Math.hypot(relX,relY) < PLAYER_HIT_RADIUS + a.worldRadius*0.4){
+        shipHit();
+      }
+    }
+    // rev2: also recycle anything that has drifted too far laterally from
+    // the ship's CURRENT position, not just ones that passed in z -- with
+    // unbounded continuous steering, sustained travel in one direction
+    // would otherwise leave every remaining asteroid stranded off to the
+    // side (out of view) while nothing new spawns to replace them, since
+    // maintainField() only tops up when the count actually drops.
+    const strandedLateral = Math.hypot(a.x-shipOffsetX, a.y-shipOffsetY) > FIELD_SPAN*2.5;
+    if(a.z <= CULL_Z || strandedLateral){
+      asteroids.splice(i,1);
+    }
+  }
+  maintainField();
+
+  for(let i=tracers.length-1;i>=0;i--){
+    tracers[i].t += dt;
+    if(tracers[i].t >= tracers[i].dur) tracers.splice(i,1);
+  }
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.97; p.vy *= 0.97;
+    p.life -= 1;
+    if(p.life <= 0) particles.splice(i,1);
+  }
+
+  if(hitFlash > 0) hitFlash -= dt*2.2;
+  if(shake > 0) shake -= dt*3.5;
+}
+
+function shipHit(){
+  hull--;
+  hitFlash = 1;
+  shake = 1;
+  sfxHullHit();
+  if(hull <= 0){
+    // rev3: hull hitting 0 no longer ends the game outright -- it costs a
+    // life. Only running out of lives is real game over.
+    lives--;
+    if(lives <= 0){
+      state = 'gameover';
+      sfxGameOver();
+      leaderboard = recordScore(playerDigits.join(''), score);
+      showGameOver();
+      return;
+    }
+    hull = HULL_MAX;
+    invuln = 2.5; // extra grace right after burning a life
+    return;
+  }
+  invuln = 1.4;
+}
+
+// ---------- DRAW ----------
+function drawStars(t){
+  ctx.save();
+  for(const s of stars){
+    const a = 0.15 + 0.25*Math.abs(Math.sin(t*0.0006 + s.phase));
+    ctx.globalAlpha = a;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawGuideLines(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  const n = 8;
+  for(let i=0;i<n;i++){
+    const ang = (i/n)*Math.PI*2;
+    ctx.beginPath();
+    ctx.moveTo(CENTER_X+Math.cos(ang)*22, CENTER_Y+Math.sin(ang)*22);
+    ctx.lineTo(CENTER_X+Math.cos(ang)*260, CENTER_Y+Math.sin(ang)*260);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.045)';
+  [90,190].forEach(r=>{
+    ctx.beginPath();
+    ctx.arc(CENTER_X, CENTER_Y, r, 0, Math.PI*2);
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
+// rev6: fading motion trail behind a rock, tracing its recent path. Lives
+// entirely on the rock's own `trail` array, so it vanishes the instant the
+// rock is destroyed (spliced out of `asteroids`) and a fresh fragment
+// starts with an empty trail of its own, not the parent's history.
+function drawAsteroidTrail(a){
+  if(a.trail.length < 2) return;
+  ctx.save();
+  ctx.lineCap = 'round';
+  for(let i=1;i<a.trail.length;i++){
+    const t0 = a.trail[i-1], t1 = a.trail[i];
+    const age = i/a.trail.length; // 0 = oldest, 1 = newest
+    ctx.strokeStyle = `rgba(255,255,255,${age*0.35})`;
+    ctx.lineWidth = 0.5 + age*1.3;
+    ctx.beginPath();
+    ctx.moveTo(t0.x, t0.y);
+    ctx.lineTo(t1.x, t1.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawAsteroid(a){
+  const p = project(a);
+  if(p.x < -50 || p.x > W+50 || p.y < -50 || p.y > VIEW_H+50) return;
+  drawAsteroidTrail(a);
+  const depthT = clamp(1 - a.z/SPAWN_Z_MAX, 0, 1);
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(a.angle);
+  ctx.strokeStyle = `rgba(255,255,255,${0.35 + depthT*0.65})`;
+  ctx.lineWidth = 1.5 + depthT*2;
+  ctx.shadowColor = '#fff';
+  ctx.shadowBlur = 4 + depthT*8;
+  ctx.beginPath();
+  const n = a.offsets.length;
+  for(let i=0;i<n;i++){
+    const ang = (i/n)*Math.PI*2;
+    const rr = p.r * a.offsets[i];
+    const x = Math.cos(ang)*rr, y = Math.sin(ang)*rr;
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
+
+// rev2: tracers are rectangular strips (not dots) that shrink in both
+// length and width as they recede toward the vanishing point, rotated to
+// align with their own direction of travel.
+function drawTracers(){
+  ctx.save();
+  for(const tr of tracers){
+    const prog = 1 - Math.pow(1-tr.t/tr.dur, 2); // ease-out
+    const x = lerp(tr.startX, tr.endX, prog);
+    const y = lerp(tr.startY, tr.endY, prog);
+    const len = lerp(68, 6, prog); // rev3: bigger bullets
+    const wid = lerp(14, 2, prog);
+    const ang = Math.atan2(tr.endY-tr.startY, tr.endX-tr.startX);
+
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.rotate(ang);
+    ctx.fillStyle = '#fff';
+    ctx.shadowColor = '#fff';
+    ctx.shadowBlur = 4 + (1-prog)*8;
+    ctx.fillRect(-len/2, -wid/2, len, wid);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawParticles(){
+  ctx.save();
+  for(const p of particles){
+    ctx.globalAlpha = Math.max(0, p.life/p.maxLife);
+    ctx.fillStyle = '#fff';
+    ctx.shadowColor = '#fff';
+    ctx.shadowBlur = 5;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2.4, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// rev5: the crosshair now follows the cursor (the cannon's actual aim
+// point), not a fixed screen-center reticle -- the vanishing point itself
+// (drawGuideLines) stays fixed, since it's a property of the 3D projection,
+// not of where the gun happens to be pointed.
+function drawCrosshair(t){
+  const aim = aimPoint();
+  const pulse = 0.6 + 0.4*Math.sin(t*0.004);
+  ctx.save();
+  ctx.strokeStyle = `rgba(255,255,255,${overheated ? 0.35 : pulse})`;
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = '#fff';
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.arc(aim.x, aim.y, 12, 0, Math.PI*2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(aim.x-20, aim.y); ctx.lineTo(aim.x-8, aim.y);
+  ctx.moveTo(aim.x+8, aim.y); ctx.lineTo(aim.x+20, aim.y);
+  ctx.moveTo(aim.x, aim.y-20); ctx.lineTo(aim.x, aim.y-8);
+  ctx.moveTo(aim.x, aim.y+8); ctx.lineTo(aim.x, aim.y+20);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// Decorative canopy framing -- no ship hull/nose is ever drawn, just the
+// windshield edge and corner struts, so the craft itself stays unseen.
+// rev6: triple parallel strokes instead of one thick bar, for a riveted
+// aircraft-panel look -- every structural frame line uses this now.
+function tripleLine(x1,y1,x2,y2, gap){
+  gap = gap===undefined ? 3.5 : gap;
+  const dx = x2-x1, dy = y2-y1;
+  const len = Math.hypot(dx,dy) || 1;
+  const nx = -dy/len, ny = dx/len;
+  for(let i=-1;i<=1;i++){
+    ctx.beginPath();
+    ctx.moveTo(x1+nx*gap*i, y1+ny*gap*i);
+    ctx.lineTo(x2+nx*gap*i, y2+ny*gap*i);
+    ctx.stroke();
+  }
+}
+// rev6: small rivet dots spaced along a frame line
+function drawRivets(x1,y1,x2,y2, spacing){
+  spacing = spacing===undefined ? 34 : spacing;
+  const dx = x2-x1, dy = y2-y1;
+  const len = Math.hypot(dx,dy);
+  const n = Math.max(1, Math.floor(len/spacing));
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  for(let i=1;i<n;i++){
+    const t = i/n;
+    ctx.beginPath();
+    ctx.arc(x1+dx*t, y1+dy*t, 1.6, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawFraming(){
+  ctx.save();
+
+  const slant = 46;
+  // rev6: the outer frame is now a trapezoid, not a rectangle -- its
+  // left/right edges are parallel to the inner diagonal dividers (same
+  // slant), so each side pane is a true trapezoid matching the canopy's
+  // cone shape, instead of a rectangle clipped by a diagonal bar. The
+  // bottom corners touch the canvas edge (widest point); the top corners
+  // inset by the same 2*slant the dividers themselves shift by.
+  const topL = {x:4+slant*2, y:4}, topR = {x:W-4-slant*2, y:4};
+  const botL = {x:4, y:VIEW_H-4}, botR = {x:W-4, y:VIEW_H-4};
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = 1.3;
+  ctx.shadowColor = '#fff';
+  ctx.shadowBlur = 3;
+  tripleLine(topL.x, topL.y, topR.x, topR.y);
+  tripleLine(topR.x, topR.y, botR.x, botR.y);
+  tripleLine(botR.x, botR.y, botL.x, botL.y);
+  tripleLine(botL.x, botL.y, topL.x, topL.y);
+  ctx.shadowBlur = 0;
+  drawRivets(topL.x, topL.y, topR.x, topR.y);
+  drawRivets(topR.x, topR.y, botR.x, botR.y);
+  drawRivets(botR.x, botR.y, botL.x, botL.y);
+  drawRivets(botL.x, botL.y, topL.x, topL.y);
+  // small rivet clusters at each corner
+  [topL, topR, botL, botR].forEach(p=>{
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    [[-6,-6],[6,-6],[-6,6],[6,6]].forEach(([ox,oy])=>{
+      ctx.beginPath(); ctx.arc(p.x+ox, p.y+oy, 1.6, 0, Math.PI*2); ctx.fill();
+    });
+  });
+
+  // rev2/3/4: the two diagonal canopy dividers, still forming the partial
+  // cone -- rev6: triple-line + rivets instead of one thick bar
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  ctx.lineWidth = 1.3;
+  ctx.shadowColor = '#fff';
+  ctx.shadowBlur = 4;
+  tripleLine(W*0.25 + slant, 4, W*0.25 - slant, VIEW_H-4);
+  tripleLine(W*0.75 - slant, 4, W*0.75 + slant, VIEW_H-4);
+  ctx.shadowBlur = 0;
+  drawRivets(W*0.25 + slant, 4, W*0.25 - slant, VIEW_H-4);
+  drawRivets(W*0.75 - slant, 4, W*0.75 + slant, VIEW_H-4);
+
+  ctx.restore();
+}
+
+function drawBar(x,y,w,h,frac,label){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fillRect(x+2,y+2, Math.max(0,(w-4)*clamp(frac,0,1)), h-4);
+  ctx.restore();
+}
+
+// rev4: proper compass dial replacing the old dot-in-circle gauge -- rim,
+// 12 clock-style ticks (4 major cardinal ▲▶▼◀ for up/right/down/left
+// steering), and a needle whose length encodes input magnitude.
+function drawCompassWheel(cx, cy, r, dirX, dirY){
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke();
+
+  for(let i=0;i<12;i++){
+    const ang = (i/12)*Math.PI*2 - Math.PI/2;
+    const major = i%3===0;
+    const r1 = major ? r-14 : r-8;
+    ctx.strokeStyle = major ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = major ? 2 : 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(ang)*r1, Math.sin(ang)*r1);
+    ctx.lineTo(Math.cos(ang)*r, Math.sin(ang)*r);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.font = Math.round(r*0.26)+'px "Courier New", monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('▲', 0, -(r-26));
+  ctx.fillText('▶', (r-26), 1);
+  ctx.fillText('▼', 0, (r-26));
+  ctx.fillText('◀', -(r-26), 1);
+
+  const mag = Math.min(1, Math.hypot(dirX,dirY));
+  if(mag > 0.02){
+    const ang = Math.atan2(dirY,dirX);
+    const len = r*0.72*mag;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 3;
+    ctx.shadowColor = '#fff'; ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.moveTo(0,0);
+    ctx.lineTo(Math.cos(ang)*len, Math.sin(ang)*len);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(0,0,4,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+// rev4: small Asteroids-style ship silhouette, used as a per-life icon in
+// the console -- a HUD glyph, not a rendering of the player's own ship
+// (which is still never shown in the forward viewport)
+function drawShipIcon(cx, cy, size){
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, -size);
+  ctx.lineTo(size*0.7, size*0.8);
+  ctx.lineTo(0, size*0.35);
+  ctx.lineTo(-size*0.7, size*0.8);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
+
+// rev6: aircraft-style attitude/globe indicator -- a rotating ball horizon
+// (sky above, hatched ground below) that banks with roll and shifts with
+// vertical steering (a pitch analog), behind a fixed ship-reference symbol
+function drawAttitudeGlobe(cx, cy, r, rollRad, pitchFrac){
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  ctx.save();
+  ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.clip();
+  ctx.rotate(rollRad);
+  const pitchOffset = clamp(pitchFrac,-1,1) * r * 0.7;
+  ctx.fillStyle = 'rgba(255,255,255,0.05)';
+  ctx.fillRect(-r*1.6, -r*1.6, r*3.2, r*1.6+pitchOffset);
+  ctx.fillStyle = 'rgba(255,255,255,0.16)';
+  ctx.fillRect(-r*1.6, pitchOffset, r*3.2, r*1.6);
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 1;
+  for(let gy=pitchOffset+10; gy<r*1.6; gy+=12){
+    ctx.beginPath(); ctx.moveTo(-r*1.6, gy); ctx.lineTo(r*1.6, gy); ctx.stroke();
+  }
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2.2;
+  ctx.beginPath(); ctx.moveTo(-r*1.6, pitchOffset); ctx.lineTo(r*1.6, pitchOffset); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 1;
+  for(let k=-2;k<=2;k++){
+    if(k===0) continue;
+    const gy = pitchOffset + k*r*0.32;
+    const wth = k%2===0 ? r*0.28 : r*0.16;
+    ctx.beginPath(); ctx.moveTo(-wth, gy); ctx.lineTo(wth, gy); ctx.stroke();
+  }
+  ctx.restore();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke();
+
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = '#fff'; ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.moveTo(-r*0.55, 0); ctx.lineTo(-r*0.18, 0);
+  ctx.moveTo(r*0.18, 0); ctx.lineTo(r*0.55, 0);
+  ctx.moveTo(0,-r*0.12); ctx.lineTo(0, r*0.12);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(0,0,3,0,Math.PI*2); ctx.fill();
+
+  ctx.restore();
+}
+
+function drawConsole(){
+  ctx.save();
+  ctx.translate(0, CONSOLE_Y);
+
+  // rev6: triple-line + rivets, matching the viewport's aircraft-frame style
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = 1.3;
+  tripleLine(0, 3, W, 3);
+  drawRivets(0, 3, W, 3);
+
+  // rev4: SCORE is the headline stat now -- very large, bold, arcade-marquee
+  ctx.font = 'bold 42px "Courier New", monospace';
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.shadowColor = '#fff'; ctx.shadowBlur = 10;
+  ctx.fillText(String(score).padStart(6,'0'), W/2, 56);
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(W/2-260,72); ctx.lineTo(W/2+260,72); ctx.stroke();
+
+  // SPEED
+  ctx.textAlign = 'left';
+  ctx.font = '14px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('SPEED', 30, 100);
+  ctx.font = 'bold 22px "Courier New", monospace';
+  ctx.fillText(String(Math.round(forwardSpeed)).padStart(3,'0'), 30, 130);
+  drawBar(30, 144, 210, 16, (forwardSpeed-SPEED_MIN)/(SPEED_MAX-SPEED_MIN));
+
+  // COMPASS WHEEL
+  ctx.font = '14px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('HEADING', 300, 100);
+  drawCompassWheel(388, 170, 58, headingIndX, headingIndY);
+
+  // WEAPONS
+  ctx.font = '14px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('WEAPONS', 570, 100);
+  const wPulse = overheated ? (0.4+0.6*Math.abs(Math.sin(Date.now()*0.01))) : 0.85;
+  ctx.fillStyle = `rgba(255,255,255,${wPulse})`;
+  ctx.font = 'bold 16px "Courier New", monospace';
+  ctx.fillText(overheated ? 'CANNON OVERHEAT' : 'CANNON READY', 570, 130);
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  drawBar(570, 144, 190, 16, weaponHeat);
+
+  // HULL
+  ctx.font = '14px "Courier New", monospace';
+  ctx.fillText('HULL', 740, 100);
+  for(let i=0;i<HULL_MAX;i++){
+    const segX = 740 + i*38;
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(segX, 110, 32, 28);
+    if(i < hull){
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillRect(segX+2, 112, 28, 24);
+    }
+  }
+
+  // rev3: second row -- LIVES (rev4: ship icons) and rocks DESTROYED
+  ctx.font = '14px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('LIVES', 30, 226);
+  for(let i=0;i<lives;i++){
+    drawShipIcon(30+14+i*28, 252, 12);
+  }
+
+  ctx.font = '14px "Courier New", monospace';
+  ctx.fillText('DESTROYED', 300, 226);
+  ctx.font = 'bold 22px "Courier New", monospace';
+  ctx.fillText(String(rocksDestroyed).padStart(4,'0'), 300, 256);
+
+  // rev6: aircraft-style attitude/globe altimeter -- banks with roll,
+  // shifts with vertical steering (a pitch analog)
+  ctx.font = '14px "Courier New", monospace';
+  ctx.fillText('ATTITUDE', 570, 226);
+  drawAttitudeGlobe(660, 300, 68, roll, headingIndY);
+
+  ctx.restore();
+}
+
+function drawHitFlash(){
+  if(hitFlash <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = clamp(hitFlash,0,1)*0.35;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0,0,W,VIEW_H);
+  ctx.restore();
+}
+
+function render(t){
+  ctx.clearRect(0,0,W,H);
+  ctx.save();
+  if(shake > 0){
+    ctx.translate(rand(-4,4)*shake, rand(-4,4)*shake);
+  }
+
+  drawStars(t);
+  if(state==='playing' || state==='gameover'){
+    drawGuideLines();
+    const sorted = asteroids.slice().sort((a,b)=> b.z - a.z);
+    for(const a of sorted) drawAsteroid(a);
+    drawTracers();
+    drawParticles();
+    drawCrosshair(t);
+    drawHitFlash();
+  } else {
+    drawGuideLines();
+  }
+  drawFraming();
+  drawConsole();
+  ctx.restore();
+}
+
+renderTitleScreen();
+
+// ---------- MAIN LOOP ----------
+function loop(now){
+  if(!lastTime) lastTime = now;
+  let dt = (now-lastTime)/1000;
+  if(dt > 0.05) dt = 0.05;
+  lastTime = now;
+  try{
+    update(dt);
+    render(now);
+  }catch(err){
+    console.error('Game loop error:', err);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
