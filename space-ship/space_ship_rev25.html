@@ -501,11 +501,9 @@ let playerDigits = [0,0,0];
 let activeDigitIndex = 0;
 
 // rev25: shared leaderboard via a small Neon-backed API (see
-// /api/README.md for the one-time Neon+Vercel setup) -- left as an
-// empty string until that's deployed, in which case every remote call
-// below is a no-op and the game falls straight back to the LOCAL
-// per-device leaderboard beneath it, unchanged from rev3-24.
-const API_BASE = '';
+// /api/README.md for the one-time Neon+Vercel setup) -- deployed and
+// verified end-to-end (schema + GET/POST) before wiring this in.
+const API_BASE = 'https://games-ochre-beta-22.vercel.app';
 function fetchJSON(url, opts){
   return fetch(url, opts).then(r => r.ok ? r.json() : null).catch(()=>null);
 }
