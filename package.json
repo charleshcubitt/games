@@ -1,0 +1,9 @@
+{
+  "name": "games-api",
+  "private": true,
+  "type": "module",
+  "description": "Vercel serverless functions (api/*.js) backing the Neon-stored leaderboards for the games in this repo. The games themselves are static HTML hosted separately on GitHub Pages.",
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4"
+  }
+}
