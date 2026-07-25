@@ -1,0 +1,2096 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Battle Tank">
+<link rel="manifest" href="data:application/manifest+json,{%22name%22:%22Battle%20Tank%22,%22short_name%22:%22Battle%20Tank%22,%22display%22:%22fullscreen%22,%22start_url%22:%22.%22,%22background_color%22:%22%23000000%22,%22theme_color%22:%22%23000000%22}">
+<title>BATTLE TANK // PERISCOPE</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%;
+    background:#000;
+    overflow:hidden;
+    font-family:'Courier New', monospace;
+  }
+  #wrap {
+    position:fixed;
+    top:0; left:0;
+    display:flex; align-items:center; justify-content:center;
+    background:radial-gradient(ellipse at center, #001a06 0%, #000000 100%);
+  }
+  canvas {
+    background:#000;
+    cursor:crosshair;
+    display:block;
+    touch-action:none;
+    -webkit-user-select:none;
+    user-select:none;
+  }
+  /* CRT scanline overlay, tinted green to match the phosphor palette */
+  #wrap::after {
+    content:'';
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    background:repeating-linear-gradient(
+      to bottom,
+      rgba(0,0,0,0) 0px,
+      rgba(0,0,0,0) 1px,
+      rgba(0,40,10,0.25) 2px,
+      rgba(0,40,10,0.25) 3px
+    );
+    mix-blend-mode:multiply;
+  }
+  #centerMsg {
+    position:absolute;
+    top:34%; left:50%;
+    transform:translate(-50%,-50%);
+    text-align:center;
+    color:#4dff88;
+    text-shadow:0 0 12px #33ff66, 0 0 24px rgba(51,255,102,0.6);
+    pointer-events:none;
+    user-select:none;
+    background:rgba(0,10,3,0.65);
+    padding:20px 26px;
+    border-radius:10px;
+    max-width:340px;
+  }
+  #centerMsg h1 {
+    font-size:34px;
+    letter-spacing:7px;
+    margin-bottom:10px;
+    animation: flicker 2.2s infinite;
+  }
+  #centerMsg p {
+    font-size:12.5px;
+    letter-spacing:1px;
+    color:#a8f5c0;
+    text-shadow:0 0 6px rgba(51,255,102,0.7);
+    margin-top:5px;
+  }
+  #centerMsg .small {
+    font-size:12px;
+    color:#5fae7c;
+    margin-top:18px;
+  }
+  #centerMsg .heading {
+    font-size:22px;
+    letter-spacing:5px;
+    margin-top:20px;
+    margin-bottom:8px;
+  }
+  #centerMsg .digits {
+    display:flex;
+    justify-content:center;
+    gap:14px;
+    margin:20px 0;
+  }
+  #centerMsg .digitBox {
+    width:54px; height:70px;
+    border:2px solid rgba(77,255,136,0.45);
+    border-radius:6px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:34px; font-weight:bold;
+  }
+  #centerMsg .digitBox.active {
+    border-color:#4dff88;
+    box-shadow:0 0 14px rgba(51,255,102,0.7);
+  }
+  #centerMsg .btn {
+    display:inline-block;
+    margin-top:16px;
+    padding:10px 26px;
+    border:2px solid rgba(77,255,136,0.6);
+    border-radius:6px;
+    font-size:13px;
+    letter-spacing:3px;
+    box-shadow:0 0 10px rgba(51,255,102,0.15);
+    pointer-events:auto;
+    cursor:pointer;
+  }
+  #centerMsg .lb {
+    display:inline-block;
+    text-align:left;
+    min-width:260px;
+    margin-top:4px;
+  }
+  #centerMsg .lbrow {
+    display:flex;
+    justify-content:space-between;
+    font-size:11px;
+    padding:2px 0;
+    color:#8fe0ab;
+  }
+  #centerMsg .lbrow.top { color:#4dff88; text-shadow:0 0 6px rgba(51,255,102,0.8); }
+  @keyframes flicker {
+    0%, 19%, 21%, 23%, 54%, 56%, 100% { opacity:1; }
+    20%, 22%, 55% { opacity:0.6; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="390" height="844"></canvas>
+  <div id="centerMsg"></div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const centerMsg = document.getElementById('centerMsg');
+const wrap = document.getElementById('wrap');
+const GREEN = '#4dff88';
+
+// ---------- LAYOUT ----------
+// Same responsive scaffold as this repo's space-ship game: the canvas is
+// resized to the actual device viewport (visualViewport, not innerWidth/
+// Height, so mobile address-bar chrome never overlaps content), and
+// ORIENT picks between a phone-style stacked layout (portrait/landscape)
+// and a shorter desktop console, detected by input capability
+// (pointer:fine + hover:hover = mouse/trackpad) rather than screen size.
+let W, H, VIEW_H, CONSOLE_Y, CONSOLE_H, CENTER_X, CENTER_Y;
+let VIEW_X, VIEW_W, ORIENT;
+function isDesktopInput(){
+  return window.matchMedia('(pointer: fine)').matches &&
+         window.matchMedia('(hover: hover)').matches;
+}
+function getViewportSize(){
+  if(window.visualViewport){
+    return { w: window.visualViewport.width, h: window.visualViewport.height };
+  }
+  return { w: window.innerWidth, h: window.innerHeight };
+}
+function resizeCanvas(){
+  const vp = getViewportSize();
+  W = Math.round(vp.w);
+  H = Math.round(vp.h);
+  canvas.width = W; canvas.height = H;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  wrap.style.width = W + 'px';
+  wrap.style.height = H + 'px';
+  ORIENT = isDesktopInput() ? 'desktop' : (W > H ? 'landscape' : 'portrait');
+  if(ORIENT === 'landscape'){
+    VIEW_X = W*0.25;
+    VIEW_W = W*0.5;
+    VIEW_H = H;
+    CONSOLE_Y = 0;
+    CONSOLE_H = H;
+  } else {
+    VIEW_X = 0;
+    VIEW_W = W;
+    const consoleFrac = ORIENT === 'desktop' ? 0.28 : 0.40;
+    VIEW_H = Math.round(H * (1-consoleFrac));
+    CONSOLE_Y = VIEW_H;
+    CONSOLE_H = H - VIEW_H;
+  }
+  CENTER_X = VIEW_X + VIEW_W/2;
+  CENTER_Y = VIEW_H*0.6; // horizon line -- ground/sky boundary in the periscope
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('orientationchange', resizeCanvas);
+if(window.visualViewport){
+  window.visualViewport.addEventListener('resize', resizeCanvas);
+}
+
+let layout = null;
+function hitButton(px, py, btn){
+  const localY = py - CONSOLE_Y;
+  if(btn.shape==='circle'){
+    return Math.hypot(px-btn.cx, localY-btn.cy) <= btn.r;
+  }
+  return px >= btn.x && px <= btn.x+btn.w && localY >= btn.y && localY <= btn.y+btn.h;
+}
+
+// ---------- TUNING ----------
+const FOV = 66 * Math.PI/180;          // periscope field of view
+const RADAR_RANGE = 320;               // world units shown at the radar's outer rim
+const DRIVE_SPEED = 85;                // rev4: bumped from 55 -- "the tank should be more mobile in the terrain" / "drive faster in forward and reverse"
+const BODY_TURN_SPEED = 1.0;            // rev4: bumped from 0.55 -- "easier to turn", still a touch under TURRET_ROTATE_SPEED so the turret still visibly outpaces the hull
+const THROTTLE_ACCEL = 110;             // rev4: units/sec^2 while forward/back is held -- forwardSpeed persists after release (like space-ship's SPEED_ACCEL/slider) instead of tracking the stick directly, so "left and right maintains forward or backward speed" while only steering changes
+const TURRET_ROTATE_SPEED = 1.15;      // rad/sec while a rotate control is held
+const ELEV_ACCEL = 0.6;                // /sec, desktop Up/Down hold-to-set rate
+const SHELL_RANGE_MIN = 55, SHELL_RANGE_MAX = 250;
+const SHELL_FLIGHT_MIN = 1.5, SHELL_FLIGHT_MAX = 3.0; // rev3: slowed further from 1.2-2.5, per request (applies to both player and enemy shells)
+const SHELL_HEIGHT_MIN = 22, SHELL_HEIGHT_MAX = 68; // purely cosmetic arc height
+const RELOAD_TIME = 2.2;
+const FIRE_HIT_RADIUS = 22;            // world units, player shell vs enemy tank
+const SNAP_RADIUS = 62;                // rev4: widened from 46 -- aim-assist, if the predicted landing point is this close to an enemy, the shot snaps onto it, per request ("improve the... aim by snapping onto the enemy tank when the aim is close")
+const PLAYER_HIT_RADIUS = 20;          // world units, enemy shell vs player tank
+const LIVES_START = 3;
+const SCORE_PER_KILL = 100;
+const EXTRA_LIFE_SCORE = 1000;
+const LIFE_LOST_SECONDS = 1, GAME_OVER_SECONDS = 3;
+// rev1: starts with a single enemy -- each kill raises the target roster
+// size by one (1 alive -> kill it -> 2 should be alive -> kill one ->
+// 3 ...), an escalating endless-survival curve, per request.
+const ENEMY_COUNT_START = 1;
+const ENEMY_SPEED = 6;                 // rev4: slowed further from 9, per request
+const ENEMY_FIRE_RANGE = 260;
+const ENEMY_FIRE_MIN = 2.4, ENEMY_FIRE_MAX = 4.5;
+// rev2: errMag below is sampled uniformly over [0, ENEMY_AIM_ERROR], so
+// its CDF is linear -- P(errMag <= PLAYER_HIT_RADIUS) is exactly
+// PLAYER_HIT_RADIUS/ENEMY_AIM_ERROR. rev4: widened 4x -> 8x per request
+// ("make the enemy tanks aim bad") -- an unevaded shot now only lands
+// within hit range ~12.5% of the time (was 25%).
+const ENEMY_AIM_ERROR = PLAYER_HIT_RADIUS * 8;
+const ENEMY_WANDER_RADIUS_MIN = 70, ENEMY_WANDER_RADIUS_MAX = 260; // rev4: kept under RADAR_LEASH_DIST so a freshly-picked wander target is never already out of range
+const RADAR_LEASH_DIST = RADAR_RANGE*0.9; // rev4: enemies are pulled back if they ever drift past this -- "should stay in radar range"
+const ENEMY_HIT_RADIUS_DRAW = 12;
+const HILLS_COUNT = 26, HILL_DIST_MIN = 420, HILL_DIST_MAX = 760;
+const WOODS_COUNT = 26, WOODS_DIST_MIN = 55, WOODS_DIST_MAX = 340; // rev2: 20->26, per request ("more... in the terrain")
+// rev2: a handful of denser forest patches (more trees, tighter
+// clustering) mixed in alongside the regular sparser woods clumps.
+const DENSE_FOREST_COUNT = 7, DENSE_FOREST_DIST_MIN = 55, DENSE_FOREST_DIST_MAX = 340;
+const BUILDINGS_COUNT = 16, BUILDINGS_DIST_MIN = 90, BUILDINGS_DIST_MAX = 380; // rev2: 9->16, per request ("more buildings")
+const RAMPARTS_COUNT = 10, RAMPARTS_DIST_MIN = 120, RAMPARTS_DIST_MAX = 500;
+const RIVERS_COUNT = 3, RIVER_DIST_MIN = 100, RIVER_DIST_MAX = 420;
+const BRIDGE_RIVER_COUNT = 2; // how many of the rivers get a bridge crossing
+const MAX_RENDER_DIST = 780;
+const RADAR_TERRAIN_DOT = 1.1;
+
+function rand(a,b){ return a + Math.random()*(b-a); }
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+function lerp(a,b,t){ return a + (b-a)*t; }
+function vibrate(pattern){ if(navigator.vibrate) navigator.vibrate(pattern); }
+// Wraps an angle (radians) to (-PI, PI].
+function wrapAngle(a){
+  a = a % (Math.PI*2);
+  if(a > Math.PI) a -= Math.PI*2;
+  if(a < -Math.PI) a += Math.PI*2;
+  return a;
+}
+// Compass-style bearing convention throughout: 0 = world "north" (+Y),
+// increasing angle rotates clockwise toward "east" (+X). bearingTo() and
+// forwardVector() are inverses of each other, and both the periscope's
+// left/right screen mapping and the radar's clock-face mapping fall out
+// of the same `rel = wrapAngle(bearingTo(dx,dy) - turretAngle)` value.
+function bearingTo(dx, dy){ return Math.atan2(dx, dy); }
+function forwardVector(angle){ return { x: Math.sin(angle), y: Math.cos(angle) }; }
+const MOUSE_DEADZONE = 20;
+function axisInput(d, range){
+  if(Math.abs(d) < MOUSE_DEADZONE) return 0;
+  const mag = clamp((Math.abs(d)-MOUSE_DEADZONE)/(range-MOUSE_DEADZONE), 0, 1);
+  return Math.sign(d)*mag;
+}
+
+// ---------- AUDIO ----------
+let audioCtx;
+function ensureAudio(){
+  if(!audioCtx){ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); }
+  if(audioCtx.state === 'suspended'){ audioCtx.resume(); }
+}
+function beep(freq, dur, type, vol, delay){
+  if(!audioCtx) return;
+  type = type||'square'; vol = vol===undefined?0.05:vol; delay = delay||0;
+  const startAt = audioCtx.currentTime + delay;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.value = freq;
+  g.gain.value = vol;
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(startAt);
+  g.gain.exponentialRampToValueAtTime(0.0001, startAt + dur);
+  o.stop(startAt + dur);
+}
+let noiseBufferCache = null;
+function getNoiseBuffer(){
+  if(noiseBufferCache) return noiseBufferCache;
+  const dur = 0.4;
+  const n = Math.floor(audioCtx.sampleRate * dur);
+  const buffer = audioCtx.createBuffer(1, n, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for(let i=0;i<n;i++){
+    data[i] = (Math.random()*2-1) * Math.pow(1 - i/n, 2);
+  }
+  noiseBufferCache = buffer;
+  return noiseBufferCache;
+}
+function crunch(dur, vol, filterFreq){
+  if(!audioCtx) return;
+  const src = audioCtx.createBufferSource();
+  src.buffer = getNoiseBuffer();
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = filterFreq;
+  const g = audioCtx.createGain();
+  g.gain.value = vol;
+  src.connect(filter); filter.connect(g); g.connect(audioCtx.destination);
+  src.start();
+  src.stop(audioCtx.currentTime + dur);
+}
+function sfxFire(){ crunch(0.28, 0.28, 700); beep(90, 0.2, 'sawtooth', 0.1); }
+function sfxEnemyFire(){ crunch(0.22, 0.16, 600); }
+function sfxImpactBig(){ crunch(0.3, 0.24, 450); }
+function sfxImpactSmall(){ crunch(0.16, 0.14, 1200); }
+function sfxHullHit(){ crunch(0.35, 0.26, 380); }
+function sfxReloadDone(){ beep(520, 0.08, 'square', 0.06); beep(780, 0.08, 'square', 0.06, 0.08); }
+function sfxDryFire(){ beep(160, 0.05, 'square', 0.05); }
+function sfxStart(){
+  beep(160, 0.09, 'square', 0.05, 0);
+  beep(320, 0.09, 'square', 0.05, 0.09);
+  beep(480, 0.13, 'square', 0.05, 0.18);
+}
+function sfxGameOver(){
+  [260,200,150,100].forEach((f,i)=> beep(f, 0.22, 'sawtooth', 0.08, i*0.15));
+}
+function sfxSelect(){ beep(500, 0.04, 'sine', 0.06); }
+function sfxExtraLife(){ beep(1000, 0.15, 'sine', 0.06); }
+
+let buzzOsc = null, buzzGain = null, buzzLFO = null;
+function startBuzz(){
+  if(!audioCtx || buzzOsc) return;
+  buzzOsc = audioCtx.createOscillator();
+  buzzGain = audioCtx.createGain();
+  buzzOsc.type = 'sawtooth';
+  buzzOsc.frequency.value = 50;
+  buzzGain.gain.value = 0.05;
+  buzzLFO = audioCtx.createOscillator();
+  buzzLFO.type = 'square';
+  buzzLFO.frequency.value = 13;
+  const lfoGain = audioCtx.createGain();
+  lfoGain.gain.value = 36;
+  buzzLFO.connect(lfoGain);
+  lfoGain.connect(buzzOsc.frequency);
+  buzzOsc.connect(buzzGain);
+  buzzGain.connect(audioCtx.destination);
+  buzzOsc.start();
+  buzzLFO.start();
+}
+function stopBuzz(){
+  if(!buzzOsc) return;
+  try{ buzzOsc.stop(); buzzLFO.stop(); }catch(e){}
+  buzzOsc.disconnect(); buzzGain.disconnect(); buzzLFO.disconnect();
+  buzzOsc = null; buzzGain = null; buzzLFO = null;
+}
+
+// Continuous engine hum for the whole 'playing' session -- frequency/gain
+// ease toward a louder/higher target while actively driving, quieter/
+// lower at idle, read live each frame in update() rather than one-shot.
+let engineOsc = null, engineGain = null;
+function startEngine(){
+  if(!audioCtx || engineOsc) return;
+  engineOsc = audioCtx.createOscillator();
+  engineGain = audioCtx.createGain();
+  engineOsc.type = 'sawtooth';
+  engineOsc.frequency.value = 50;
+  engineGain.gain.value = 0.012;
+  engineOsc.connect(engineGain); engineGain.connect(audioCtx.destination);
+  engineOsc.start();
+}
+function stopEngine(){
+  if(!engineOsc) return;
+  try{ engineOsc.stop(); }catch(e){}
+  engineOsc.disconnect(); engineGain.disconnect();
+  engineOsc = null; engineGain = null;
+}
+function updateEngineSound(moving){
+  if(!engineOsc) return;
+  const targetGain = moving ? 0.035 : 0.012;
+  const targetFreq = moving ? 72 : 50;
+  engineGain.gain.value += (targetGain-engineGain.gain.value)*0.15;
+  engineOsc.frequency.value += (targetFreq-engineOsc.frequency.value)*0.1;
+}
+
+// ---------- STATE ----------
+let state = 'menu'; // menu | nameentry | playing | gameover
+let tankX = 0, tankY = 0, bodyAngle = 0;
+let driveIndX = 0; // rev2: eased turn input for the tank-tread drive model
+// rev4: forwardSpeed now persists like space-ship's SPEED slider value
+// instead of tracking the joystick's Y axis directly -- holding forward/
+// back accelerates it (THROTTLE_ACCEL) toward +-DRIVE_SPEED, releasing
+// holds whatever it was at (coasts), and turning (X axis) never touches
+// it at all. Per request: "left and right maintains forward or backward
+// speed but with easy turning of the tank".
+let forwardSpeed = 0;
+let turretAngle = 0;
+let elevFrac = 0.4;
+let loaded = true, reloading = false, reloadTimer = 0;
+let fireCooldown = 0;
+let fireFlashTimer = 0; // brief FIRE-button tap flash, distinct from `loaded`'s readiness state
+let shells = []; // {x,y,z (world ground pos + cosmetic height), t, dur, hmax, fromX,fromY,toX,toY, owner:'player'|'enemy'}
+let enemies = [];
+let particles = [];
+let score = 0;
+let lives = LIVES_START, nextLifeScore = EXTRA_LIFE_SCORE;
+let gameOverPending = false;
+let hitFlash = 0, shake = 0, invuln = 0;
+let lifeLostTimer = 0;
+let lifeLostImpact = {x:0,y:0};
+let crackLines = [];
+let hills = [], woods = [], buildings = [], ramparts = [], rivers = [], bridges = [];
+let enemyTargetCount = ENEMY_COUNT_START;
+let joystickDX = 0, joystickDY = 0;
+let rotateLeftHeld = false, rotateRightHeld = false;
+let elevUpHeld = false, elevDownHeld = false;
+// rev2: WASD drives the tank on desktop (arrow keys are already spoken
+// for -- turret rotate/elevation) -- held state combines additively with
+// the on-screen joystick's joystickDX/DY in update()'s drive section, so
+// either input method (or both at once) works.
+let keyDriveUp = false, keyDriveDown = false, keyDriveLeft = false, keyDriveRight = false;
+let lastTime = 0;
+
+const NAME_CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+let playerChars = [0,0,0];
+let activeDigitIndex = 0;
+
+const API_BASE = 'https://games-ochre-beta-22.vercel.app';
+function fetchJSON(url, opts){
+  return fetch(url, opts).then(r => r.ok ? r.json() : null).catch(()=>null);
+}
+const LEADERBOARD_KEY = 'battleTankLeaderboard';
+function loadLeaderboard(){
+  try{
+    const raw = localStorage.getItem(LEADERBOARD_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  }catch(e){ return []; }
+}
+function saveLeaderboard(list){
+  try{ localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(list)); }catch(e){}
+}
+function recordScore(name, finalScore){
+  const list = loadLeaderboard();
+  list.push({ name, score: finalScore, date: new Date().toISOString() });
+  list.sort((a,b)=>b.score-a.score);
+  const top10 = list.slice(0,10);
+  saveLeaderboard(top10);
+  return top10;
+}
+let leaderboard = loadLeaderboard();
+function playerName(){
+  return playerChars.map(ci=>NAME_CHARSET[ci]).join('');
+}
+
+// ---------- TERRAIN ----------
+// rev4: angle is picked from an evenly-spaced sector (+jitter) instead of
+// pure rand(0,2PI) -- pure random angles can by chance cluster and leave
+// wide empty gaps; walking evenly around the circle per feature type
+// guarantees coverage all the way around, per request ("all the terrain
+// should have features, no empty terrain"). Each terrain type still
+// covers the full circle independently, so they overlap/interleave.
+function evenAngle(i, n, jitterFrac){
+  const sector = (Math.PI*2)/n;
+  return i*sector + rand(-sector*jitterFrac, sector*jitterFrac);
+}
+function regenerateTerrain(){
+  hills = [];
+  for(let i=0;i<HILLS_COUNT;i++){
+    const ang = evenAngle(i, HILLS_COUNT, 0.4), dist = rand(HILL_DIST_MIN, HILL_DIST_MAX);
+    const fwd = forwardVector(ang);
+    const n = Math.floor(rand(3,6));
+    const pts = [];
+    for(let j=0;j<n;j++) pts.push(rand(0.5, 1.3));
+    hills.push({ x: fwd.x*dist, y: fwd.y*dist, width: rand(70,150), height: rand(30,60), offsets: pts });
+  }
+  woods = [];
+  for(let i=0;i<WOODS_COUNT;i++){
+    const ang = evenAngle(i, WOODS_COUNT, 0.4), dist = rand(WOODS_DIST_MIN, WOODS_DIST_MAX);
+    const fwd = forwardVector(ang);
+    const n = Math.floor(rand(2,5));
+    const trees = [];
+    for(let j=0;j<n;j++) trees.push({ ox: rand(-14,14), oy: rand(-14,14), size: rand(7,13) });
+    woods.push({ x: fwd.x*dist, y: fwd.y*dist, trees });
+  }
+  // rev2: denser forest patches mixed into the same `woods` array
+  // (drawWoods()/collision-free handling is identical either way) --
+  // more trees per clump, packed tighter together.
+  for(let i=0;i<DENSE_FOREST_COUNT;i++){
+    const ang = evenAngle(i, DENSE_FOREST_COUNT, 0.5), dist = rand(DENSE_FOREST_DIST_MIN, DENSE_FOREST_DIST_MAX);
+    const fwd = forwardVector(ang);
+    const n = Math.floor(rand(7,12));
+    const trees = [];
+    for(let j=0;j<n;j++) trees.push({ ox: rand(-11,11), oy: rand(-11,11), size: rand(6,12) });
+    woods.push({ x: fwd.x*dist, y: fwd.y*dist, trees });
+  }
+  // rev2: buildings now have hp and block player/enemy shells (see
+  // updateShells()) instead of letting them pass through like trees do
+  // -- "buildings stop bullets but take damage".
+  buildings = [];
+  for(let i=0;i<BUILDINGS_COUNT;i++){
+    const ang = evenAngle(i, BUILDINGS_COUNT, 0.4), dist = rand(BUILDINGS_DIST_MIN, BUILDINGS_DIST_MAX);
+    const fwd = forwardVector(ang);
+    const w = rand(15,24), h = rand(10,16);
+    buildings.push({
+      x: fwd.x*dist, y: fwd.y*dist, w, h, roofH: rand(6,10),
+      hitRadius: Math.max(w,h)*0.75, hp: 2, alive: true
+    });
+  }
+  ramparts = [];
+  for(let i=0;i<RAMPARTS_COUNT;i++){
+    const ang = evenAngle(i, RAMPARTS_COUNT, 0.4), dist = rand(RAMPARTS_DIST_MIN, RAMPARTS_DIST_MAX);
+    const fwd = forwardVector(ang);
+    ramparts.push({ x: fwd.x*dist, y: fwd.y*dist, width: rand(50,95), height: rand(11,19), crenellations: Math.floor(rand(3,6)) });
+  }
+  // rev1: rivers are decorative ground "patches" (same static-field
+  // placement style as every other terrain feature, not a true
+  // continuous winding watercourse) -- a subset get a bridge feature
+  // co-located with them so it reads as a crossing.
+  rivers = [];
+  for(let i=0;i<RIVERS_COUNT;i++){
+    const ang = evenAngle(i, RIVERS_COUNT, 0.3), dist = rand(RIVER_DIST_MIN, RIVER_DIST_MAX);
+    const fwd = forwardVector(ang);
+    rivers.push({ x: fwd.x*dist, y: fwd.y*dist, width: rand(70,150) });
+  }
+  bridges = [];
+  const shuffled = rivers.slice().sort(()=>Math.random()-0.5);
+  for(let i=0;i<Math.min(BRIDGE_RIVER_COUNT, shuffled.length);i++){
+    const rv = shuffled[i];
+    bridges.push({ x: rv.x, y: rv.y, w: rand(32,48) });
+  }
+}
+
+// ---------- ENEMIES ----------
+function spawnEnemy(){
+  const ang = rand(0, Math.PI*2), dist = rand(ENEMY_WANDER_RADIUS_MIN, ENEMY_WANDER_RADIUS_MAX);
+  const fwd = forwardVector(ang);
+  const x = tankX + fwd.x*dist, y = tankY + fwd.y*dist;
+  return {
+    x, y, bodyAngle: rand(0,Math.PI*2),
+    wanderX: x, wanderY: y,
+    fireTimer: rand(ENEMY_FIRE_MIN, ENEMY_FIRE_MAX),
+    alive: true
+  };
+}
+function pickNewWanderTarget(e){
+  const ang = rand(0, Math.PI*2), dist = rand(ENEMY_WANDER_RADIUS_MIN, ENEMY_WANDER_RADIUS_MAX);
+  const fwd = forwardVector(ang);
+  e.wanderX = tankX + fwd.x*dist;
+  e.wanderY = tankY + fwd.y*dist;
+}
+
+// ---------- GAME RESET ----------
+function resetGame(){
+  tankX = 0; tankY = 0; bodyAngle = 0;
+  driveIndX = 0;
+  forwardSpeed = 0;
+  turretAngle = 0;
+  elevFrac = 0.4;
+  loaded = true; reloading = false; reloadTimer = 0;
+  fireCooldown = 0;
+  shells = []; particles = [];
+  score = 0;
+  lives = LIVES_START; nextLifeScore = EXTRA_LIFE_SCORE;
+  hitFlash = 0; shake = 0;
+  lifeLostTimer = 0;
+  gameOverPending = false;
+  invuln = 1;
+  joystickDX = 0; joystickDY = 0;
+  rotateLeftHeld = false; rotateRightHeld = false;
+  elevUpHeld = false; elevDownHeld = false;
+  regenerateTerrain();
+  enemyTargetCount = ENEMY_COUNT_START;
+  enemies = [];
+  for(let i=0;i<enemyTargetCount;i++) enemies.push(spawnEnemy());
+}
+function requestFullscreen(){
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if(req){
+    try{ req.call(el).catch(()=>{}); }catch(e){}
+  }
+}
+function startGame(){
+  ensureAudio();
+  if(state !== 'playing'){
+    resetGame();
+    state = 'playing';
+    centerMsg.style.display = 'none';
+    sfxStart();
+    startEngine();
+    requestFullscreen();
+  }
+}
+
+// ---------- MENU / NAME-ENTRY / GAME-OVER SCREENS ----------
+function leaderboardHTML(){
+  if(leaderboard.length===0) return '<p class="small">NO SCORES YET</p>';
+  return '<div class="lb">' + leaderboard.slice(0,10).map((e,i)=>
+    '<div class="lbrow' + (i===0?' top':'') + '"><span>' + (i+1) + '. ' + e.name + '</span><span>' +
+    String(e.score).padStart(6,'0') + '</span></div>'
+  ).join('') + '</div>';
+}
+function renderTitleScreen(skipRemoteRefresh){
+  const controlsHTML = ORIENT === 'desktop'
+    ? '<p>DRIVE: ARROW KEYS (LEFT/RIGHT STEER, DOESN\'T CHANGE SPEED)</p>' +
+      '<p>TURRET: . AND / -- ELEVATION: W AND S</p>' +
+      '<p>SPACE TO FIRE -- RELOAD IS AUTOMATIC</p>'
+    : '<p>DRIVE: DRAG THE JOYSTICK (LEFT/RIGHT STEER, DOESN\'T CHANGE SPEED)</p>' +
+      '<p>ROTATE THE TURRET AND SET ELEVATION WITH THE CONSOLE DIALS</p>' +
+      '<p>FIRE TO SHOOT -- RELOAD IS AUTOMATIC</p>';
+  centerMsg.innerHTML =
+    '<h1>BATTLE TANK</h1>' +
+    '<p class="small" style="margin-top:-8px;">REV 4</p>' +
+    controlsHTML +
+    '<p class="small">' + (ORIENT==='desktop' ? 'CLICK' : 'TAP') + ' TO BEGIN</p>' +
+    '<div class="heading">TOP SCORES</div>' +
+    leaderboardHTML();
+  centerMsg.style.display = 'block';
+  if(!skipRemoteRefresh && API_BASE){
+    fetchJSON(`${API_BASE}/api/leaderboard?game=battletank`).then(top=>{
+      if(Array.isArray(top) && state==='menu'){ leaderboard = top; renderTitleScreen(true); }
+    });
+  }
+}
+function renderNameEntry(){
+  const controlsHTML = ORIENT === 'desktop'
+    ? '<p class="small">ARROW UP/DOWN CHANGE LETTER &nbsp; LEFT/RIGHT CHANGE SLOT &nbsp; ENTER TO CONFIRM</p>'
+    : '<p class="small">JOYSTICK UP/DOWN CHANGE LETTER &nbsp; LEFT/RIGHT CHANGE SLOT &nbsp; FIRE TO SELECT</p>';
+  centerMsg.innerHTML =
+    '<div class="heading">ENTER CALLSIGN</div>' +
+    controlsHTML +
+    '<div class="digits">' + playerChars.map((ci,i)=>
+      '<div class="digitBox' + (i===activeDigitIndex?' active':'') + '">' + NAME_CHARSET[ci] + '</div>'
+    ).join('') + '</div>';
+  centerMsg.style.display = 'block';
+}
+function moveDigitSlot(dir){
+  activeDigitIndex = clamp(activeDigitIndex+dir, 0, playerChars.length-1);
+  sfxSelect();
+  renderNameEntry();
+}
+function cycleDigit(dir){
+  const n = NAME_CHARSET.length;
+  playerChars[activeDigitIndex] = ((playerChars[activeDigitIndex]+dir)%n+n)%n;
+  sfxSelect();
+  renderNameEntry();
+}
+function confirmNameEntry(){
+  startGame();
+}
+function selectNameSlot(){
+  sfxSelect();
+  if(activeDigitIndex < playerChars.length-1){
+    activeDigitIndex++;
+    renderNameEntry();
+  } else {
+    confirmNameEntry();
+  }
+}
+function showGameOver(skipRemoteRefresh){
+  centerMsg.innerHTML =
+    '<h1>TANK LOST</h1>' +
+    '<p>' + playerName() + ' — FINAL SCORE: ' + score + '</p>' +
+    '<div class="btn">NEW GAME</div>' +
+    '<p class="small">PRESS ENTER OR CLICK TO CREW UP AGAIN</p>' +
+    '<div class="heading">TOP SCORES</div>' +
+    leaderboardHTML();
+  centerMsg.style.display = 'block';
+  if(!skipRemoteRefresh) submitScoreRemote(playerName(), score);
+}
+function submitScoreRemote(name, finalScore){
+  if(!API_BASE) return;
+  fetchJSON(`${API_BASE}/api/score`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ game: 'battletank', name, score: finalScore })
+  }).then(top=>{
+    if(Array.isArray(top) && state==='gameover'){
+      leaderboard = top;
+      showGameOver(true);
+    }
+  });
+}
+function showLifeLostScreen(){
+  centerMsg.innerHTML =
+    '<h1>TRACKS DISABLED</h1>' +
+    '<p>TANKS REMAINING: ' + lives + '</p>' +
+    '<p class="small">CREW REBOARDING…</p>';
+  centerMsg.style.display = 'block';
+}
+
+// ---------- INPUT ----------
+const PREVENT_CODES = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Enter','Space','Period','Slash'];
+function handlePrimaryAction(){
+  if(state==='menu'){
+    ensureAudio();
+    state = 'nameentry';
+    renderNameEntry();
+    sfxSelect();
+  } else if(state==='nameentry'){
+    confirmNameEntry();
+  } else if(state==='gameover'){
+    state = 'menu';
+    playerChars = [0,0,0];
+    activeDigitIndex = 0;
+    renderTitleScreen();
+  }
+}
+window.addEventListener('keydown', (e)=>{
+  if(PREVENT_CODES.includes(e.code)) e.preventDefault();
+  if(state === 'playing'){
+    // rev2: arrow keys drive the tank (were turret rotate/elevation);
+    // turret rotate moved to Period/Slash, elevation to W/S (left hand),
+    // per request.
+    if(e.code === 'ArrowUp') keyDriveUp = true;
+    if(e.code === 'ArrowDown') keyDriveDown = true;
+    if(e.code === 'ArrowLeft') keyDriveLeft = true;
+    if(e.code === 'ArrowRight') keyDriveRight = true;
+    if(e.code === 'Period') rotateLeftHeld = true;
+    if(e.code === 'Slash') rotateRightHeld = true;
+    if(e.code === 'KeyW') elevUpHeld = true;
+    if(e.code === 'KeyS') elevDownHeld = true;
+    if(e.code === 'Space' && !e.repeat) tryFire();
+  }
+  if(!e.repeat){
+    if(state==='nameentry'){
+      if(e.code==='ArrowLeft') moveDigitSlot(-1);
+      if(e.code==='ArrowRight') moveDigitSlot(1);
+      if(e.code==='ArrowUp') cycleDigit(1);
+      if(e.code==='ArrowDown') cycleDigit(-1);
+    }
+    if(e.code==='Enter') handlePrimaryAction();
+  }
+});
+window.addEventListener('keyup', (e)=>{
+  if(e.code === 'ArrowUp') keyDriveUp = false;
+  if(e.code === 'ArrowDown') keyDriveDown = false;
+  if(e.code === 'ArrowLeft') keyDriveLeft = false;
+  if(e.code === 'ArrowRight') keyDriveRight = false;
+  if(e.code === 'Period') rotateLeftHeld = false;
+  if(e.code === 'Slash') rotateRightHeld = false;
+  if(e.code === 'KeyW') elevUpHeld = false;
+  if(e.code === 'KeyS') elevDownHeld = false;
+});
+
+const activePointers = new Map(); // pointerId -> 'joystick' | 'elev' | 'rotateLeft' | 'rotateRight'
+function pointerCanvasPos(e){
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width/rect.width, scaleY = canvas.height/rect.height;
+  return { x:(e.clientX-rect.left)*scaleX, y:(e.clientY-rect.top)*scaleY };
+}
+function withinJoystickBase(px, py){
+  if(!layout) return false;
+  const dx = px - layout.joystick.cx, dy = (py - CONSOLE_Y) - layout.joystick.cy;
+  return Math.hypot(dx, dy) <= layout.joystick.r;
+}
+function updateJoystickFromPoint(px, py){
+  if(!layout) return;
+  const dx = px - layout.joystick.cx, dy = (py - CONSOLE_Y) - layout.joystick.cy;
+  const dist = Math.hypot(dx, dy);
+  if(dist < 0.5){ joystickDX = 0; joystickDY = 0; return; }
+  const mag = Math.min(1, dist / layout.joystick.r);
+  joystickDX = (dx/dist) * mag;
+  joystickDY = (dy/dist) * mag;
+}
+function setElevFromPoint(py){
+  const localY = py - CONSOLE_Y;
+  const t = clamp(1 - (localY - layout.elev.trackY)/layout.elev.trackH, 0, 1);
+  elevFrac = t;
+}
+// rev4: reload is automatic now (no more separate RELOAD button/action)
+// -- firing immediately starts the reload timer itself, per request
+// ("make the tank reload automatic, lose the reload button but keep
+// reload timer and indication light").
+function tryFire(){
+  if(state!=='playing' || fireCooldown>0) return;
+  if(!loaded){ sfxDryFire(); return; }
+  fireCooldown = 0.15;
+  loaded = false;
+  reloading = true;
+  reloadTimer = RELOAD_TIME;
+  fireFlashTimer = 0.14;
+  sfxFire();
+  const range = lerp(SHELL_RANGE_MIN, SHELL_RANGE_MAX, elevFrac);
+  const dur = lerp(SHELL_FLIGHT_MIN, SHELL_FLIGHT_MAX, elevFrac);
+  const hmax = lerp(SHELL_HEIGHT_MIN, SHELL_HEIGHT_MAX, elevFrac);
+  const fwd = forwardVector(turretAngle);
+  let toX = tankX+fwd.x*range, toY = tankY+fwd.y*range;
+  const snapTarget = findSnapTarget(toX, toY);
+  if(snapTarget){ toX = snapTarget.x; toY = snapTarget.y; }
+  shells.push({
+    owner:'player', t:0, dur, hmax,
+    fromX:tankX, fromY:tankY,
+    toX, toY
+  });
+}
+canvas.addEventListener('pointermove', (e)=>{
+  const role = activePointers.get(e.pointerId);
+  if(!role || !layout) return;
+  const p = pointerCanvasPos(e);
+  if(role === 'joystick') updateJoystickFromPoint(p.x, p.y);
+  else if(role === 'elev') setElevFromPoint(p.y);
+});
+canvas.addEventListener('pointerdown', (e)=>{
+  ensureAudio();
+  if((state!=='playing' && state!=='nameentry') || !layout) return;
+  const p = pointerCanvasPos(e);
+
+  if(state==='nameentry'){
+    const f = layout.btnFire, r = layout.btnReload;
+    if(hitButton(p.x,p.y,f) || hitButton(p.x,p.y,r)){
+      selectNameSlot();
+    } else if(withinJoystickBase(p.x, p.y)){
+      activePointers.set(e.pointerId, 'joystick');
+      updateJoystickFromPoint(p.x, p.y);
+    }
+    return;
+  }
+
+  if(hitButton(p.x, p.y, layout.btnFire)){
+    tryFire();
+    activePointers.set(e.pointerId, 'fire');
+  } else if(hitButton(p.x, p.y, layout.btnRotateLeft)){
+    rotateLeftHeld = true;
+    activePointers.set(e.pointerId, 'rotateLeft');
+  } else if(hitButton(p.x, p.y, layout.btnRotateRight)){
+    rotateRightHeld = true;
+    activePointers.set(e.pointerId, 'rotateRight');
+  } else if(hitButton(p.x, p.y, layout.elevHit)){
+    activePointers.set(e.pointerId, 'elev');
+    setElevFromPoint(p.y);
+  } else if(withinJoystickBase(p.x, p.y)){
+    activePointers.set(e.pointerId, 'joystick');
+    updateJoystickFromPoint(p.x, p.y);
+  }
+});
+function releasePointer(e){
+  const role = activePointers.get(e.pointerId);
+  if(role==='rotateLeft') rotateLeftHeld = false;
+  if(role==='rotateRight') rotateRightHeld = false;
+  if(role==='joystick'){ joystickDX = 0; joystickDY = 0; }
+  activePointers.delete(e.pointerId);
+}
+canvas.addEventListener('pointerup', releasePointer);
+canvas.addEventListener('pointercancel', releasePointer);
+canvas.addEventListener('click', (e)=>{
+  if(state==='nameentry') return;
+  handlePrimaryAction();
+});
+centerMsg.addEventListener('click', handlePrimaryAction);
+
+const NAME_ENTRY_DEADZONE = 0.5;
+const NAME_ENTRY_REPEAT = 0.32;
+let nameEntryVTimer = 0, nameEntryHTimer = 0;
+function updateNameEntryControls(dt){
+  if(state !== 'nameentry'){ nameEntryVTimer = 0; nameEntryHTimer = 0; return; }
+  if(Math.abs(joystickDY) > NAME_ENTRY_DEADZONE){
+    nameEntryVTimer -= dt;
+    if(nameEntryVTimer <= 0){
+      cycleDigit(joystickDY < 0 ? 1 : -1);
+      nameEntryVTimer = NAME_ENTRY_REPEAT;
+    }
+  } else { nameEntryVTimer = 0; }
+  if(Math.abs(joystickDX) > NAME_ENTRY_DEADZONE){
+    nameEntryHTimer -= dt;
+    if(nameEntryHTimer <= 0){
+      moveDigitSlot(joystickDX < 0 ? -1 : 1);
+      nameEntryHTimer = NAME_ENTRY_REPEAT;
+    }
+  } else { nameEntryHTimer = 0; }
+}
+
+// ---------- UPDATE ----------
+function tankHit(){
+  if(lifeLostTimer > 0 || gameOverPending) return;
+  invuln = 1.4;
+  hitFlash = 1;
+  shake = 1;
+  sfxHullHit();
+  lives--;
+  if(lives <= 0){
+    gameOverPending = true;
+    lifeLostTimer = GAME_OVER_SECONDS;
+    lifeLostImpact = { x: rand(VIEW_X+VIEW_W*0.3, VIEW_X+VIEW_W*0.7), y: rand(VIEW_H*0.3, VIEW_H*0.7) };
+    generateCrackLines();
+    showLifeLostScreen();
+    startBuzz();
+    vibrate([60,40,Math.round(GAME_OVER_SECONDS*1000)]);
+    return;
+  }
+  lifeLostTimer = LIFE_LOST_SECONDS;
+  lifeLostImpact = { x: rand(VIEW_X+VIEW_W*0.3, VIEW_X+VIEW_W*0.7), y: rand(VIEW_H*0.3, VIEW_H*0.7) };
+  generateCrackLines();
+  showLifeLostScreen();
+  startBuzz();
+  vibrate([60,40,Math.round(LIFE_LOST_SECONDS*1000)]);
+}
+function generateCrackLines(){
+  crackLines = [];
+  const n = 9;
+  for(let i=0;i<n;i++){
+    const ang = (i/n)*Math.PI*2 + rand(-0.2,0.2);
+    const segs = Math.floor(rand(3,5));
+    const totalLen = rand(160,320);
+    const pts = [{x:lifeLostImpact.x, y:lifeLostImpact.y}];
+    for(let s=1;s<=segs;s++){
+      const len = totalLen*(s/segs);
+      const jitter = rand(-18,18);
+      pts.push({
+        x: lifeLostImpact.x + Math.cos(ang)*len + Math.cos(ang+Math.PI/2)*jitter,
+        y: lifeLostImpact.y + Math.sin(ang)*len + Math.sin(ang+Math.PI/2)*jitter
+      });
+    }
+    crackLines.push(pts);
+  }
+}
+function spawnParticles(x,y,count,speedMax){
+  for(let i=0;i<count;i++){
+    const ang = rand(0,Math.PI*2), spd = rand(0.5, speedMax);
+    particles.push({ x, y, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd, life:rand(20,44), maxLife:44 });
+  }
+}
+function killEnemy(e, screenX, screenY){
+  e.alive = false;
+  // rev1: each kill raises the roster size by one -- 1 alive, kill it,
+  // now 2 should be alive, kill one of those, now 3... escalating
+  // endless survival, per request.
+  enemyTargetCount++;
+  score += SCORE_PER_KILL;
+  if(score >= nextLifeScore){
+    lives++;
+    nextLifeScore += EXTRA_LIFE_SCORE;
+    sfxExtraLife();
+  }
+  sfxImpactBig();
+  spawnParticles(screenX, screenY, 22, 3);
+}
+// rev3: aim-assist -- the nearest alive enemy within SNAP_RADIUS of a
+// predicted landing point, or null. Shared by tryFire() (actually snaps
+// the shot onto it) and drawAimMarker() (shows a "locked" indicator
+// before you even fire, so the assist is visible/predictable).
+function findSnapTarget(x, y){
+  let best = null, bestDist = SNAP_RADIUS;
+  for(const e of enemies){
+    if(!e.alive) continue;
+    const d = Math.hypot(e.x-x, e.y-y);
+    if(d <= bestDist){ best = e; bestDist = d; }
+  }
+  return best;
+}
+// rev2: buildings block shells (both player's and enemy's) at their
+// landing point and take damage instead of letting the shot pass
+// through to whatever's behind -- "buildings stop bullets but take
+// damage" / "can be used as cover". Trees have no equivalent check, so
+// shells always pass through woods untouched.
+function findBuildingHit(x, y){
+  for(const b of buildings){
+    if(!b.alive) continue;
+    if(Math.hypot(b.x-x, b.y-y) <= b.hitRadius) return b;
+  }
+  return null;
+}
+function damageBuilding(b){
+  b.hp--;
+  const dx = b.x-tankX, dy = b.y-tankY;
+  const rel = wrapAngle(bearingTo(dx,dy) - turretAngle);
+  const dist = Math.hypot(dx,dy);
+  const sx = CENTER_X + (rel/(FOV/2))*(VIEW_W/2);
+  const sy = CENTER_Y - Math.max(3, 30*(1-clamp(dist/MAX_RENDER_DIST,0,1)));
+  spawnParticles(sx, sy, 10, 2.2);
+  if(b.hp <= 0){
+    b.alive = false;
+    sfxImpactBig();
+  } else {
+    sfxImpactSmall();
+  }
+}
+function updateShells(dt){
+  for(let i=shells.length-1;i>=0;i--){
+    const s = shells[i];
+    s.t += dt;
+    if(s.t >= s.dur){
+      // impact
+      const hitBuilding = findBuildingHit(s.toX, s.toY);
+      if(hitBuilding){
+        damageBuilding(hitBuilding);
+      } else if(s.owner==='player'){
+        let hitAny = false;
+        for(const e of enemies){
+          if(!e.alive) continue;
+          if(Math.hypot(e.x-s.toX, e.y-s.toY) <= FIRE_HIT_RADIUS){
+            const dx = e.x-tankX, dy = e.y-tankY;
+            const rel = wrapAngle(bearingTo(dx,dy) - turretAngle);
+            const dist = Math.hypot(dx,dy);
+            const sx = CENTER_X + (rel/(FOV/2))*(VIEW_W/2);
+            const sy = CENTER_Y - Math.max(4, 40*(1-clamp(dist/MAX_RENDER_DIST,0,1)));
+            killEnemy(e, sx, sy);
+            hitAny = true;
+          }
+        }
+        if(!hitAny) sfxImpactSmall();
+      } else {
+        const dist = Math.hypot(s.toX-tankX, s.toY-tankY);
+        if(dist <= PLAYER_HIT_RADIUS && invuln<=0){
+          tankHit();
+        } else {
+          sfxImpactSmall();
+        }
+      }
+      shells.splice(i,1);
+    }
+  }
+}
+function updateEnemies(dt){
+  for(const e of enemies){
+    if(!e.alive) continue;
+    const dx = e.wanderX-e.x, dy = e.wanderY-e.y;
+    const d = Math.hypot(dx,dy);
+    if(d < 8){
+      pickNewWanderTarget(e);
+    } else {
+      const vx = dx/d*ENEMY_SPEED, vy = dy/d*ENEMY_SPEED;
+      e.x += vx*dt; e.y += vy*dt;
+      e.bodyAngle = bearingTo(vx,vy);
+    }
+    // rev4: soft leash -- if the player has driven away enough that this
+    // enemy would now be outside radar range, pull it back in (and pick
+    // a fresh wander target so it doesn't just immediately drift back
+    // out). Keeps "the enemy should move around but always stay in the
+    // radar range" true regardless of player movement, not just at the
+    // moment a wander target was picked.
+    const distFromPlayer = Math.hypot(e.x-tankX, e.y-tankY);
+    if(distFromPlayer > RADAR_LEASH_DIST){
+      const pull = (distFromPlayer - RADAR_LEASH_DIST) / distFromPlayer;
+      e.x += (tankX-e.x)*pull;
+      e.y += (tankY-e.y)*pull;
+      pickNewWanderTarget(e);
+    }
+    const distToPlayer = Math.hypot(e.x-tankX, e.y-tankY);
+    e.fireTimer -= dt;
+    if(e.fireTimer <= 0 && distToPlayer <= ENEMY_FIRE_RANGE && lifeLostTimer<=0){
+      e.fireTimer = rand(ENEMY_FIRE_MIN, ENEMY_FIRE_MAX);
+      const errAng = rand(0,Math.PI*2), errMag = rand(0,ENEMY_AIM_ERROR);
+      const dur = lerp(SHELL_FLIGHT_MIN, SHELL_FLIGHT_MAX, clamp(distToPlayer/SHELL_RANGE_MAX,0,1));
+      const hmax = lerp(SHELL_HEIGHT_MIN, SHELL_HEIGHT_MAX, clamp(distToPlayer/SHELL_RANGE_MAX,0,1));
+      shells.push({
+        owner:'enemy', t:0, dur, hmax,
+        fromX:e.x, fromY:e.y,
+        toX: tankX+Math.cos(errAng)*errMag, toY: tankY+Math.sin(errAng)*errMag
+      });
+      sfxEnemyFire();
+    }
+  }
+  // respawn destroyed enemies after a short delay, up toward the
+  // escalating enemyTargetCount (endless play, same "top up" idea as
+  // space-ship's asteroid field, but the target itself climbs on kills).
+  const aliveCount = enemies.filter(e=>e.alive).length;
+  if(aliveCount < enemyTargetCount){
+    respawnTimer -= dt;
+    if(respawnTimer <= 0){
+      enemies = enemies.filter(e=>e.alive);
+      enemies.push(spawnEnemy());
+      respawnTimer = rand(2,4);
+    }
+  }
+}
+let respawnTimer = 2;
+
+function update(dt){
+  updateNameEntryControls(dt);
+  if(state !== 'playing') return;
+
+  if(lifeLostTimer > 0){
+    lifeLostTimer -= dt;
+    shake = 0.7 + 0.3*Math.abs(Math.sin(lifeLostTimer*14));
+    if(lifeLostTimer <= 0){
+      shake = 0;
+      stopBuzz();
+      if(gameOverPending){
+        gameOverPending = false;
+        state = 'gameover';
+        stopEngine();
+        sfxGameOver();
+        leaderboard = recordScore(playerName(), score);
+        showGameOver();
+      } else {
+        invuln = 1.5;
+        centerMsg.style.display = 'none';
+      }
+    }
+    return;
+  }
+
+  // drive -- rev2 introduced the tank-tread model (throttle along the
+  // tank's own bodyAngle, turning that heading at a separate rate).
+  // rev4: forwardSpeed now PERSISTS like space-ship's SPEED slider
+  // instead of tracking the stick's Y axis directly -- holding forward/
+  // back accelerates it, releasing holds whatever it was at, and turning
+  // (X axis) never touches it. Per request: "left and right maintains
+  // forward or backward speed but with easy turning of the tank". The
+  // touch joystick acts like a single-stick car control (dy=throttle,
+  // dx=steering) and combines additively with the arrow keys so either
+  // input method (or both) works.
+  const rawThrottle = clamp(-joystickDY + (keyDriveUp?1:0) - (keyDriveDown?1:0), -1, 1);
+  const rawTurn = clamp(joystickDX + (keyDriveRight?1:0) - (keyDriveLeft?1:0), -1, 1);
+  if(Math.abs(rawThrottle) > 0.05){
+    forwardSpeed = clamp(forwardSpeed + rawThrottle*THROTTLE_ACCEL*dt, -DRIVE_SPEED, DRIVE_SPEED);
+  }
+  driveIndX += (rawTurn - driveIndX) * Math.min(1, dt*6);
+  bodyAngle = wrapAngle(bodyAngle + driveIndX*BODY_TURN_SPEED*dt);
+  if(Math.abs(forwardSpeed) > 0.5){
+    const fwd = forwardVector(bodyAngle);
+    tankX += fwd.x*forwardSpeed*dt;
+    tankY += fwd.y*forwardSpeed*dt;
+  }
+  updateEngineSound(Math.abs(forwardSpeed) > 1);
+
+  if(rotateLeftHeld) turretAngle -= TURRET_ROTATE_SPEED*dt;
+  if(rotateRightHeld) turretAngle += TURRET_ROTATE_SPEED*dt;
+  turretAngle = wrapAngle(turretAngle);
+  if(elevUpHeld) elevFrac = clamp(elevFrac + ELEV_ACCEL*dt, 0, 1);
+  if(elevDownHeld) elevFrac = clamp(elevFrac - ELEV_ACCEL*dt, 0, 1);
+
+  if(fireCooldown > 0) fireCooldown -= dt;
+  if(reloading){
+    reloadTimer -= dt;
+    if(reloadTimer <= 0){
+      reloading = false;
+      loaded = true;
+      sfxReloadDone();
+    }
+  }
+  if(invuln > 0) invuln -= dt;
+
+  updateShells(dt);
+  updateEnemies(dt);
+
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.97; p.vy *= 0.97;
+    p.life -= 1;
+    if(p.life <= 0) particles.splice(i,1);
+  }
+  if(hitFlash > 0) hitFlash -= dt*2.2;
+  if(shake > 0) shake -= dt*3.5;
+  if(fireFlashTimer > 0) fireFlashTimer -= dt;
+}
+
+// ---------- PROJECTION ----------
+// Returns null if the object is outside the periscope's field of view or
+// beyond render distance; otherwise screen x/y + a 0..1 depth fade.
+function projectPeriscope(wx, wy){
+  const dx = wx-tankX, dy = wy-tankY;
+  const dist = Math.hypot(dx,dy);
+  if(dist > MAX_RENDER_DIST || dist < 1) return null;
+  const rel = wrapAngle(bearingTo(dx,dy) - turretAngle);
+  if(Math.abs(rel) > FOV/2 + 0.15) return null;
+  const x = CENTER_X + (rel/(FOV/2)) * (VIEW_W/2);
+  const depthT = 1 - clamp(dist/MAX_RENDER_DIST, 0, 1);
+  return { x, dist, depthT, rel };
+}
+function projectRadar(cx, cy, r, wx, wy){
+  const dx = wx-tankX, dy = wy-tankY;
+  const dist = Math.hypot(dx,dy);
+  const rel = wrapAngle(bearingTo(dx,dy) - turretAngle);
+  const rr = Math.min(1, dist/RADAR_RANGE) * r;
+  return { x: cx + Math.sin(rel)*rr, y: cy - Math.cos(rel)*rr, dist };
+}
+
+// ---------- DRAW: PERISCOPE ----------
+function drawHorizon(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(77,255,136,0.35)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(VIEW_X, CENTER_Y); ctx.lineTo(VIEW_X+VIEW_W, CENTER_Y);
+  ctx.stroke();
+  // ground grid, converging toward the horizon
+  ctx.strokeStyle = 'rgba(77,255,136,0.1)';
+  ctx.lineWidth = 1;
+  for(let i=1;i<=6;i++){
+    const y = CENTER_Y + (VIEW_H-CENTER_Y)*(i/6);
+    ctx.beginPath(); ctx.moveTo(VIEW_X, y); ctx.lineTo(VIEW_X+VIEW_W, y); ctx.stroke();
+  }
+  const vanishX = CENTER_X;
+  for(let i=-4;i<=4;i++){
+    ctx.beginPath();
+    ctx.moveTo(vanishX, CENTER_Y);
+    ctx.lineTo(vanishX + i*VIEW_W*0.5, VIEW_H);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawHills(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(77,255,136,0.5)';
+  ctx.lineWidth = 1.5;
+  for(const h of hills){
+    const p = projectPeriscope(h.x, h.y);
+    if(!p) continue;
+    const w = h.width * (0.3+p.depthT*0.5);
+    const hh = h.height * (0.3+p.depthT*0.5);
+    ctx.globalAlpha = 0.25 + p.depthT*0.5;
+    ctx.beginPath();
+    const n = h.offsets.length;
+    ctx.moveTo(p.x-w/2, CENTER_Y);
+    for(let i=0;i<n;i++){
+      const t = i/(n-1);
+      const x = p.x - w/2 + w*t;
+      const y = CENTER_Y - hh*h.offsets[i]*Math.sin(Math.PI*t+0.001)*1.4;
+      ctx.lineTo(x, Math.min(CENTER_Y, y));
+    }
+    ctx.lineTo(p.x+w/2, CENTER_Y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawWoods(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(77,255,136,0.7)';
+  for(const w of woods){
+    const p = projectPeriscope(w.x, w.y);
+    if(!p) continue;
+    const scale = 0.4 + p.depthT*1.4;
+    ctx.globalAlpha = 0.35 + p.depthT*0.65;
+    ctx.lineWidth = 1 + p.depthT*1.5;
+    for(const t of w.trees){
+      const tx = p.x + t.ox*scale*0.5;
+      const s = t.size*scale;
+      ctx.beginPath();
+      ctx.moveTo(tx, CENTER_Y);
+      ctx.lineTo(tx-s*0.5, CENTER_Y);
+      ctx.lineTo(tx, CENTER_Y - s*1.8);
+      ctx.lineTo(tx+s*0.5, CENTER_Y);
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+function drawBuildings(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(77,255,136,0.75)';
+  for(const b of buildings){
+    const p = projectPeriscope(b.x, b.y);
+    if(!p) continue;
+    const scale = 0.4 + p.depthT*1.4;
+    const w = b.w*scale, h = b.h*scale, roofH = b.roofH*scale;
+    ctx.globalAlpha = 0.35 + p.depthT*0.65;
+    ctx.lineWidth = 1 + p.depthT*1.5;
+    if(!b.alive){
+      // rev2: destroyed building -- a low jagged rubble pile instead of
+      // the full house silhouette, per "buildings... take damage".
+      ctx.beginPath();
+      ctx.moveTo(p.x-w/2, CENTER_Y);
+      ctx.lineTo(p.x-w*0.25, CENTER_Y-h*0.25);
+      ctx.lineTo(p.x, CENTER_Y-h*0.12);
+      ctx.lineTo(p.x+w*0.3, CENTER_Y-h*0.3);
+      ctx.lineTo(p.x+w/2, CENTER_Y);
+      ctx.stroke();
+      continue;
+    }
+    ctx.strokeRect(p.x-w/2, CENTER_Y-h, w, h);
+    ctx.beginPath();
+    ctx.moveTo(p.x-w/2-2, CENTER_Y-h);
+    ctx.lineTo(p.x, CENTER_Y-h-roofH);
+    ctx.lineTo(p.x+w/2+2, CENTER_Y-h);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawRamparts(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(77,255,136,0.6)';
+  for(const r of ramparts){
+    const p = projectPeriscope(r.x, r.y);
+    if(!p) continue;
+    const scale = 0.35 + p.depthT*1.2;
+    const w = r.width*scale, h = r.height*scale;
+    ctx.globalAlpha = 0.3 + p.depthT*0.6;
+    ctx.lineWidth = 1 + p.depthT*1.3;
+    const teeth = r.crenellations;
+    ctx.beginPath();
+    ctx.moveTo(p.x-w/2, CENTER_Y);
+    ctx.lineTo(p.x-w/2, CENTER_Y-h*0.6);
+    for(let i=0;i<teeth;i++){
+      const tx0 = p.x-w/2 + (w/teeth)*i;
+      const tx1 = tx0 + (w/teeth)*0.55;
+      ctx.lineTo(tx0, CENTER_Y-h);
+      ctx.lineTo(tx1, CENTER_Y-h);
+      ctx.lineTo(tx1, CENTER_Y-h*0.6);
+    }
+    ctx.lineTo(p.x+w/2, CENTER_Y-h*0.6);
+    ctx.lineTo(p.x+w/2, CENTER_Y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+// rev1: rivers are a decorative wavy ground band at a fixed world spot
+// (same static-field placement every other terrain feature uses), not a
+// true continuous winding watercourse -- kept simple for a first pass.
+function drawRivers(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(140,255,210,0.55)';
+  for(const rv of rivers){
+    const p = projectPeriscope(rv.x, rv.y);
+    if(!p) continue;
+    const scale = 0.35 + p.depthT*1.3;
+    const w = rv.width*scale;
+    ctx.globalAlpha = 0.25 + p.depthT*0.55;
+    ctx.lineWidth = 1 + p.depthT*1.2;
+    for(const yOff of [-1.5, 2.5]){
+      ctx.beginPath();
+      for(let i=0;i<=8;i++){
+        const t = i/8;
+        const x = p.x - w/2 + w*t;
+        const y = CENTER_Y + yOff*scale + Math.sin(t*Math.PI*2 + rv.x*0.05)*3*scale;
+        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+function drawBridges(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(77,255,136,0.85)';
+  for(const br of bridges){
+    const p = projectPeriscope(br.x, br.y);
+    if(!p) continue;
+    const scale = 0.35 + p.depthT*1.3;
+    const w = br.w*scale;
+    ctx.globalAlpha = 0.4 + p.depthT*0.6;
+    ctx.lineWidth = 1.4 + p.depthT*1.4;
+    ctx.beginPath();
+    ctx.moveTo(p.x-w/2, CENTER_Y-2*scale);
+    ctx.lineTo(p.x+w/2, CENTER_Y-2*scale);
+    ctx.stroke();
+    for(const fx of [-w/2, -w/6, w/6, w/2]){
+      ctx.beginPath();
+      ctx.moveTo(p.x+fx, CENTER_Y-2*scale);
+      ctx.lineTo(p.x+fx, CENTER_Y+4*scale);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+// rev3: a recognizable wireframe Tiger I silhouette (sloped front glacis,
+// boxy turret set back of center, long overhanging gun barrel, a row of
+// road wheels) instead of rev1/2's plain rectangle-and-arc placeholder.
+// Also gets a cheap "billboard rotation" cue: apparent width is squashed
+// by how much we're seeing it broadside vs. head/tail-on, based on the
+// enemy's own bodyAngle relative to our line of sight to it -- makes it
+// read as actually facing a direction instead of always flat-on.
+function drawEnemyTanks(){
+  ctx.save();
+  for(const e of enemies){
+    if(!e.alive) continue;
+    const p = projectPeriscope(e.x, e.y);
+    if(!p) continue;
+    const s = clamp(10*(0.5+p.depthT*2.4), 3, 30);
+
+    const losAngle = bearingTo(e.x-tankX, e.y-tankY);
+    const relFacing = wrapAngle(e.bodyAngle - losAngle);
+    const squash = clamp(Math.abs(Math.sin(relFacing)), 0.2, 1);
+
+    ctx.save();
+    ctx.translate(p.x, CENTER_Y);
+    ctx.scale(squash, 1);
+    ctx.globalAlpha = 0.4 + p.depthT*0.6;
+    ctx.strokeStyle = GREEN;
+    ctx.shadowColor = GREEN; ctx.shadowBlur = 6;
+    ctx.lineWidth = 1.3;
+
+    // rev4: considerably more detailed than rev3's plain box hull --
+    // short vertical nose under the sloped glacis, an engine-deck seam,
+    // the track's upper return run, 8 interleaved-stagger road wheels
+    // plus a distinct front drive sprocket (with cross-spokes) and rear
+    // idler, exhaust pipes, and a turret with a commander's cupola, rear
+    // stowage bin, and a muzzle brake at the barrel tip.
+    const L = s*2.1, H = s*0.55, tW = s*0.7, tH = s*0.42, barrelLen = s*1.4;
+    const noseX = L/2, glacisX = L/2-s*0.32;
+
+    ctx.beginPath();
+    ctx.moveTo(-L/2, 0);
+    ctx.lineTo(noseX-s*0.08, 0);
+    ctx.lineTo(noseX, -s*0.14);
+    ctx.lineTo(glacisX, -H);
+    ctx.lineTo(-L/2, -H);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-L/2+s*0.15, -H); ctx.lineTo(-L/2+s*0.15, -H*0.55);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(-L/2+s*0.05, -s*0.34);
+    ctx.lineTo(L/2-s*0.12, -s*0.34);
+    ctx.stroke();
+
+    const wheelCount = 8;
+    for(let i=0;i<wheelCount;i++){
+      const t = i/(wheelCount-1);
+      const wx = lerp(-L/2+s*0.22, L/2-s*0.3, t);
+      const stagger = (i%2===0) ? 0 : -s*0.05;
+      ctx.beginPath();
+      ctx.arc(wx, -s*0.13+stagger, s*0.115, 0, Math.PI*2);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.arc(L/2-s*0.28, -s*0.15, s*0.17, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(L/2-s*0.28-s*0.17, -s*0.15); ctx.lineTo(L/2-s*0.28+s*0.17, -s*0.15);
+    ctx.moveTo(L/2-s*0.28, -s*0.15-s*0.17); ctx.lineTo(L/2-s*0.28, -s*0.15+s*0.17);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(-L/2+s*0.18, -s*0.15, s*0.16, 0, Math.PI*2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(-L/2+s*0.02, -H*0.5); ctx.lineTo(-L/2+s*0.02, -H*0.85);
+    ctx.moveTo(-L/2+s*0.12, -H*0.5); ctx.lineTo(-L/2+s*0.12, -H*0.9);
+    ctx.stroke();
+
+    const turX = -tW/2+s*0.05, turY = -H-tH;
+    ctx.strokeRect(turX, turY, tW, tH);
+    ctx.beginPath();
+    ctx.arc(turX+tW*0.28, turY+tH*0.15, s*0.09, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.strokeRect(turX-s*0.14, turY+tH*0.3, s*0.14, tH*0.45);
+
+    const barrelY = turY+tH*0.5;
+    ctx.beginPath();
+    ctx.moveTo(turX+tW, barrelY);
+    ctx.lineTo(turX+tW+barrelLen, barrelY);
+    ctx.stroke();
+    ctx.strokeRect(turX+tW+barrelLen-s*0.05, barrelY-s*0.06, s*0.14, s*0.12);
+
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+  ctx.restore();
+}
+function shellHeight(s){
+  const t = clamp(s.t/s.dur, 0, 1);
+  return 4*s.hmax*t*(1-t);
+}
+// rev3: shells render as a small wireframe cylinder (two side walls +
+// top/bottom end caps) instead of a plain dot, per request -- scaled by
+// the same depthT every other periscope object uses, so outgoing shells
+// visibly shrink as they recede and incoming ones grow as they close in.
+function drawShellsPeriscope(){
+  ctx.save();
+  for(const s of shells){
+    const t = clamp(s.t/s.dur, 0, 1);
+    const wx = lerp(s.fromX, s.toX, t), wy = lerp(s.fromY, s.toY, t);
+    const p = projectPeriscope(wx, wy);
+    if(!p) continue;
+    const h = shellHeight(s);
+    const y = CENTER_Y - h*(0.4+p.depthT*0.9);
+    const color = s.owner==='player' ? GREEN : '#ffb347';
+    ctx.strokeStyle = color; ctx.fillStyle = color;
+    ctx.shadowColor = color; ctx.shadowBlur = 7;
+    ctx.globalAlpha = 0.5 + p.depthT*0.5;
+    ctx.lineWidth = 1.2;
+    const rad = Math.max(1.2, 2.6*(0.4+p.depthT));
+    const len = Math.max(2.5, 6.5*(0.4+p.depthT));
+    ctx.beginPath();
+    ctx.moveTo(p.x-rad, y-len/2); ctx.lineTo(p.x-rad, y+len/2);
+    ctx.moveTo(p.x+rad, y-len/2); ctx.lineTo(p.x+rad, y+len/2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(p.x, y-len/2, rad, rad*0.45, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(p.x, y+len/2, rad, rad*0.45, 0, 0, Math.PI*2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+// rev4: shared by drawReticle()/drawAimMarker()/drawRadar() so the
+// center reticle, the ground-plane aim marker, and the radar's landing-
+// point X all agree on exactly the same predicted impact point and lock
+// state -- computed once instead of three slightly-different copies.
+function predictedLandingPoint(){
+  const range = lerp(SHELL_RANGE_MIN, SHELL_RANGE_MAX, elevFrac);
+  const fwd = forwardVector(turretAngle);
+  return { x: tankX+fwd.x*range, y: tankY+fwd.y*range };
+}
+function isAimLocked(){
+  const t = predictedLandingPoint();
+  return !!findSnapTarget(t.x, t.y);
+}
+// rev4: the center reticle also turns red when the aim-assist would
+// snap the next shot onto an enemy (previously only the separate ground
+// marker did) -- a second, always-on-screen confirmation of the lock
+// since the ground marker can project off to the side or off-screen.
+function drawReticle(){
+  const locked = isAimLocked();
+  ctx.save();
+  ctx.strokeStyle = locked ? 'rgba(255,90,70,0.95)' : 'rgba(77,255,136,0.85)';
+  ctx.lineWidth = locked ? 2.6 : 2;
+  ctx.shadowColor = locked ? '#ff5a46' : GREEN; ctx.shadowBlur = locked ? 14 : 10;
+  ctx.beginPath();
+  ctx.arc(CENTER_X, CENTER_Y, 18, 0, Math.PI*2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(CENTER_X-30, CENTER_Y); ctx.lineTo(CENTER_X-12, CENTER_Y);
+  ctx.moveTo(CENTER_X+12, CENTER_Y); ctx.lineTo(CENTER_X+30, CENTER_Y);
+  ctx.moveTo(CENTER_X, CENTER_Y-30); ctx.lineTo(CENTER_X, CENTER_Y-12);
+  ctx.moveTo(CENTER_X, CENTER_Y+12); ctx.lineTo(CENTER_X, CENTER_Y+30);
+  ctx.stroke();
+  ctx.restore();
+}
+// rev2: distinct from the fixed center reticle (which just shows the
+// turret's facing direction) -- this marks the actual predicted impact
+// point on the ground given the current elevation-derived range, so the
+// player can see exactly where a shot will land before firing. Per
+// request ("show crosshairs where the tank is aiming").
+function drawAimMarker(){
+  const target = predictedLandingPoint();
+  const p = projectPeriscope(target.x, target.y);
+  if(!p) return;
+  // rev3: shows a "locked" marker (brighter red) when the aim-assist
+  // (findSnapTarget(), also used by tryFire()) would snap this shot onto
+  // an enemy -- visible feedback for the assist before you even fire.
+  const locked = !!findSnapTarget(target.x, target.y);
+  ctx.save();
+  ctx.strokeStyle = locked ? 'rgba(255,90,70,0.95)' : 'rgba(255,205,80,0.9)';
+  ctx.shadowColor = locked ? '#ff5a46' : '#ffcd50'; ctx.shadowBlur = locked ? 12 : 8;
+  ctx.lineWidth = locked ? 2.2 : 1.6;
+  const s = 7 + p.depthT*7;
+  ctx.beginPath();
+  ctx.moveTo(p.x-s, CENTER_Y); ctx.lineTo(p.x-s*0.35, CENTER_Y);
+  ctx.moveTo(p.x+s*0.35, CENTER_Y); ctx.lineTo(p.x+s, CENTER_Y);
+  ctx.moveTo(p.x, CENTER_Y-s*0.7); ctx.lineTo(p.x, CENTER_Y-s*0.25);
+  ctx.moveTo(p.x, CENTER_Y+s*0.25); ctx.lineTo(p.x, CENTER_Y+s*0.7);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(p.x, CENTER_Y, s*0.7, 0, Math.PI*2);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawHitFlash(){
+  if(hitFlash <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = clamp(hitFlash,0,1)*0.35;
+  ctx.fillStyle = GREEN;
+  ctx.fillRect(VIEW_X,0,VIEW_W,VIEW_H);
+  ctx.restore();
+}
+function drawLifeLostOverlay(){
+  if(lifeLostTimer <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = 0.16;
+  ctx.fillStyle = GREEN;
+  ctx.fillRect(VIEW_X,0,VIEW_W,VIEW_H);
+  ctx.restore();
+  ctx.save();
+  ctx.strokeStyle = 'rgba(77,255,136,0.85)';
+  ctx.shadowColor = GREEN; ctx.shadowBlur = 8;
+  ctx.lineWidth = 1.8;
+  for(const pts of crackLines){
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+function drawParticles(){
+  ctx.save();
+  for(const p of particles){
+    ctx.globalAlpha = Math.max(0, p.life/p.maxLife);
+    ctx.fillStyle = GREEN;
+    ctx.shadowColor = GREEN; ctx.shadowBlur = 5;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2.2, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+function tripleLine(x1,y1,x2,y2, gap){
+  gap = gap===undefined ? 3.5 : gap;
+  const dx = x2-x1, dy = y2-y1;
+  const len = Math.hypot(dx,dy) || 1;
+  const nx = -dy/len, ny = dx/len;
+  for(let i=-1;i<=1;i++){
+    ctx.beginPath();
+    ctx.moveTo(x1+nx*gap*i, y1+ny*gap*i);
+    ctx.lineTo(x2+nx*gap*i, y2+ny*gap*i);
+    ctx.stroke();
+  }
+}
+function drawRivets(x1,y1,x2,y2, spacing){
+  spacing = spacing===undefined ? 34 : spacing;
+  const dx = x2-x1, dy = y2-y1;
+  const len = Math.hypot(dx,dy);
+  const n = Math.max(1, Math.floor(len/spacing));
+  ctx.save();
+  ctx.fillStyle = 'rgba(77,255,136,0.55)';
+  for(let i=1;i<n;i++){
+    const t = i/n;
+    ctx.beginPath();
+    ctx.arc(x1+dx*t, y1+dy*t, 1.6, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+function drawFraming(){
+  ctx.save();
+  const topL = {x:VIEW_X+4, y:4}, topR = {x:VIEW_X+VIEW_W-4, y:4};
+  const botL = {x:VIEW_X+4, y:VIEW_H-4}, botR = {x:VIEW_X+VIEW_W-4, y:VIEW_H-4};
+  ctx.strokeStyle = 'rgba(77,255,136,0.55)';
+  ctx.lineWidth = 1.3;
+  ctx.shadowColor = GREEN; ctx.shadowBlur = 3;
+  tripleLine(topL.x, topL.y, topR.x, topR.y);
+  tripleLine(topR.x, topR.y, botR.x, botR.y);
+  tripleLine(botR.x, botR.y, botL.x, botL.y);
+  tripleLine(botL.x, botL.y, topL.x, topL.y);
+  ctx.shadowBlur = 0;
+  drawRivets(topL.x, topL.y, topR.x, topR.y);
+  drawRivets(topR.x, topR.y, botR.x, botR.y);
+  drawRivets(botR.x, botR.y, botL.x, botL.y);
+  drawRivets(botL.x, botL.y, topL.x, topL.y);
+  [topL, topR, botL, botR].forEach(p=>{
+    ctx.fillStyle = 'rgba(77,255,136,0.6)';
+    [[-6,-6],[6,-6],[-6,6],[6,6]].forEach(([ox,oy])=>{
+      ctx.beginPath(); ctx.arc(p.x+ox, p.y+oy, 1.6, 0, Math.PI*2); ctx.fill();
+    });
+  });
+  ctx.restore();
+}
+
+// ---------- DRAW: CONSOLE WIDGETS ----------
+function drawButton(btn, pressed, label, disabled){
+  ctx.save();
+  ctx.globalAlpha = disabled ? 0.4 : 1;
+  ctx.fillStyle = pressed ? 'rgba(77,255,136,0.35)' : 'rgba(77,255,136,0.08)';
+  ctx.strokeStyle = 'rgba(77,255,136,0.85)';
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = GREEN; ctx.shadowBlur = pressed ? 18 : 6;
+  ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+  ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = GREEN;
+  ctx.font = 'bold ' + Math.max(10, Math.min(15, btn.h*0.32)) + 'px "Courier New", monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = GREEN; ctx.shadowBlur = pressed ? 14 : 0;
+  ctx.fillText(label!==undefined?label:btn.label, btn.x+btn.w/2, btn.y+btn.h/2+1);
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+function drawJoystick(cx, cy, r, dx, dy){
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = 'rgba(77,255,136,0.6)';
+  ctx.lineWidth = 3;
+  ctx.shadowColor = GREEN; ctx.shadowBlur = 10;
+  ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke();
+  ctx.shadowBlur = 0;
+  for(let i=0;i<16;i++){
+    const ang = (i/16)*Math.PI*2;
+    const major = i%4===0;
+    const r1 = major ? r-12 : r-6;
+    ctx.strokeStyle = major ? 'rgba(77,255,136,0.7)' : 'rgba(77,255,136,0.28)';
+    ctx.lineWidth = major ? 2 : 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(ang)*r1, Math.sin(ang)*r1);
+    ctx.lineTo(Math.cos(ang)*r, Math.sin(ang)*r);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(77,255,136,0.3)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-8,0); ctx.lineTo(8,0);
+  ctx.moveTo(0,-8); ctx.lineTo(0,8);
+  ctx.stroke();
+  const knobR = r*0.32;
+  const maxTravel = r - knobR;
+  const kx = dx*maxTravel, ky = dy*maxTravel;
+  const deflected = Math.hypot(dx,dy) > 0.02;
+  if(deflected){
+    ctx.strokeStyle = 'rgba(77,255,136,0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(kx,ky); ctx.stroke();
+  }
+  ctx.fillStyle = deflected ? 'rgba(77,255,136,0.4)' : 'rgba(77,255,136,0.14)';
+  ctx.strokeStyle = GREEN;
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = GREEN; ctx.shadowBlur = deflected ? 16 : 6;
+  ctx.beginPath(); ctx.arc(kx, ky, knobR, 0, Math.PI*2);
+  ctx.fill(); ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+function drawElevSlider(L){
+  const s = L.elev;
+  const t = elevFrac;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(77,255,136,0.7)';
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = GREEN; ctx.shadowBlur = 6;
+  ctx.strokeRect(s.trackX, s.trackY, s.trackW, s.trackH);
+  ctx.shadowBlur = 0;
+  const fillH = s.trackH*t;
+  ctx.fillStyle = 'rgba(77,255,136,0.18)';
+  ctx.fillRect(s.trackX, s.trackY+s.trackH-fillH, s.trackW, fillH);
+  const knobY = s.trackY + s.trackH*(1-t);
+  const knobR = Math.min(s.trackW*0.6, s.trackW*0.5+16, s.trackH*0.14);
+  ctx.fillStyle = GREEN;
+  ctx.shadowColor = GREEN; ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.arc(s.trackX+s.trackW/2, knobY, knobR, 0, Math.PI*2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(77,255,136,0.85)';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold ' + Math.min(Math.max(9, s.trackW*0.42), s.labelFontMax) + 'px "Courier New", monospace';
+  ctx.fillText('ELEV', s.trackX+s.trackW/2, s.labelY);
+  ctx.restore();
+}
+function drawCompassDial(cx, cy, r, currentAngle){
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = 'rgba(77,255,136,0.6)';
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = GREEN; ctx.shadowBlur = 8;
+  ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke();
+  ctx.shadowBlur = 0;
+  for(let i=0;i<12;i++){
+    const ang = (i/12)*Math.PI*2;
+    const major = i%3===0;
+    const r1 = major ? r-13 : r-7;
+    ctx.strokeStyle = major ? 'rgba(77,255,136,0.8)' : 'rgba(77,255,136,0.35)';
+    ctx.lineWidth = major ? 2 : 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.sin(ang)*r1, -Math.cos(ang)*r1);
+    ctx.lineTo(Math.sin(ang)*r, -Math.cos(ang)*r);
+    ctx.stroke();
+  }
+  // needle points at the turret's current bearing relative to straight-ahead-on-dial (0 = up)
+  ctx.strokeStyle = GREEN;
+  ctx.lineWidth = 3;
+  ctx.shadowColor = GREEN; ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.moveTo(0,0);
+  ctx.lineTo(Math.sin(currentAngle)*r*0.72, -Math.cos(currentAngle)*r*0.72);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = GREEN;
+  ctx.beginPath(); ctx.arc(0,0,3.5,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawShipIcon(cx, cy, size){
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = 'rgba(77,255,136,0.85)';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(-size, -size*0.4, size*2, size*0.8);
+  ctx.beginPath(); ctx.arc(0,-size*0.4,size*0.45,Math.PI,0); ctx.stroke();
+  ctx.restore();
+}
+// ---------- DRAW: RADAR ----------
+function drawRadar(L){
+  const r = L.radar.r, cx = L.radar.cx, cy = L.radar.cy;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = 'rgba(77,255,136,0.6)';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = GREEN; ctx.shadowBlur = 8;
+  ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = 'rgba(77,255,136,0.18)';
+  ctx.lineWidth = 1;
+  [0.33,0.66].forEach(f=>{ ctx.beginPath(); ctx.arc(0,0,r*f,0,Math.PI*2); ctx.stroke(); });
+  ctx.beginPath(); ctx.moveTo(-r,0); ctx.lineTo(r,0); ctx.moveTo(0,-r); ctx.lineTo(0,r); ctx.stroke();
+  // sweep
+  const sweepAng = (performance.now()/1000 * 1.4) % (Math.PI*2);
+  ctx.save();
+  ctx.rotate(sweepAng);
+  ctx.strokeStyle = 'rgba(77,255,136,0.6)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(0,-r); ctx.stroke();
+  ctx.restore();
+  // rev4: terrain always shows, even beyond RADAR_RANGE -- projectRadar()
+  // already clamps the radial position to the rim (Math.min(1,dist/
+  // RADAR_RANGE)), so simply not skipping distant features here is
+  // enough, per request ("always show the features in the radar").
+  ctx.fillStyle = 'rgba(77,255,136,0.35)';
+  const terrainFeatures = hills.concat(woods, buildings, ramparts, rivers);
+  for(const f of terrainFeatures){
+    const rp = projectRadar(0,0,r, f.x, f.y);
+    ctx.beginPath(); ctx.arc(rp.x, rp.y, RADAR_TERRAIN_DOT, 0, Math.PI*2); ctx.fill();
+  }
+  // player marker (always centered, pointing at turret-forward = up)
+  ctx.fillStyle = GREEN;
+  ctx.beginPath();
+  ctx.moveTo(0,-6); ctx.lineTo(4,5); ctx.lineTo(-4,5); ctx.closePath();
+  ctx.fill();
+  // enemies
+  for(const e of enemies){
+    if(!e.alive) continue;
+    const rp = projectRadar(0,0,r, e.x, e.y);
+    if(rp.dist > RADAR_RANGE) continue;
+    ctx.fillStyle = '#ffb347';
+    ctx.shadowColor = '#ffb347'; ctx.shadowBlur = 5;
+    ctx.beginPath(); ctx.arc(rp.x, rp.y, 3.4, 0, Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  // shells
+  for(const s of shells){
+    const t = clamp(s.t/s.dur,0,1);
+    const wx = lerp(s.fromX,s.toX,t), wy = lerp(s.fromY,s.toY,t);
+    const rp = projectRadar(0,0,r, wx, wy);
+    if(rp.dist > RADAR_RANGE) continue;
+    ctx.fillStyle = s.owner==='player' ? GREEN : '#ff5555';
+    ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 5;
+    ctx.beginPath(); ctx.arc(rp.x, rp.y, 2.4, 0, Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  // rev4: predicted landing point as an X, same locked-red/amber color
+  // logic the periscope's aim marker and center reticle use -- per
+  // request ("show the target point where bullets will land in the
+  // radar as an X").
+  if(state==='playing'){
+    const target = predictedLandingPoint();
+    const rp = projectRadar(0,0,r, target.x, target.y);
+    const locked = isAimLocked();
+    ctx.strokeStyle = locked ? 'rgba(255,90,70,0.95)' : 'rgba(255,205,80,0.9)';
+    ctx.shadowColor = locked ? '#ff5a46' : '#ffcd50'; ctx.shadowBlur = locked ? 8 : 5;
+    ctx.lineWidth = locked ? 2.2 : 1.6;
+    const xs = 5;
+    ctx.beginPath();
+    ctx.moveTo(rp.x-xs, rp.y-xs); ctx.lineTo(rp.x+xs, rp.y+xs);
+    ctx.moveTo(rp.x+xs, rp.y-xs); ctx.lineTo(rp.x-xs, rp.y+xs);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+  ctx.restore();
+}
+
+// ---------- LAYOUT: PORTRAIT / DESKTOP (shared shape) ----------
+function computeLayoutPortrait(){
+  const padX = W*0.02;
+  const contentW = W - padX*2;
+  const rowScoreH = CONSOLE_H*0.13;
+  const contentY = rowScoreH;
+  const contentH = CONSOLE_H - rowScoreH;
+
+  const colGap = contentW*0.025;
+  const colW = (contentW-colGap)/2;
+  const leftX = padX, rightX = padX+colW+colGap;
+
+  const rowGap = contentH*0.018;
+  const rowH = (contentH-rowGap)/2;
+  const topY = contentY, botY = contentY+rowH+rowGap;
+
+  // rev2: "spread the items out inside the available space" -- bigger
+  // fill fractions and tighter gaps throughout this function than rev1.
+  // The radar in particular is oversized on purpose and pokes up above
+  // CONSOLE_Y into the periscope viewport -- drawConsole() runs after
+  // and outside the viewport's clip region, so it simply overlays on
+  // top, per request ("as big as possible, even encroaching on the view
+  // screen").
+  const radarR = Math.min(colW*0.95, rowH*0.98);
+  const radar = { cx: leftX+colW/2, cy: topY+rowH*0.42, r: radarR };
+  const joystick = { cx: leftX+colW/2, cy: botY+rowH/2, r: Math.min(colW, rowH)*0.48 };
+
+  // rev2 fix: the dial and the rotate-button row below it previously
+  // could overlap (dialR was sized independent of where the button row
+  // actually starts) -- now explicitly budgeted so the dial fills up to
+  // its row's top edge and stops short of the button row, instead of
+  // both being sized independently.
+  const compassCYFrac = 0.30, rotBtnYFrac = 0.62;
+  const dialR = Math.min(colW*0.46, rowH*compassCYFrac);
+  const compass = { cx: rightX+colW/2, cy: topY+rowH*compassCYFrac, r: dialR };
+  const rotBtnW = Math.min(colW*0.46, rowH*0.95), rotBtnH = rowH*0.32, rotBtnY = topY+rowH*rotBtnYFrac;
+  const rotGap = rotBtnW*0.12;
+  const rotGroupW = rotBtnW*2 + rotGap;
+  const rotGroupX = rightX + (colW-rotGroupW)/2;
+  const btnRotateLeft = { x: rotGroupX, y: rotBtnY, w: rotBtnW, h: rotBtnH, label: '◄ L' };
+  const btnRotateRight = { x: rotGroupX+rotBtnW+rotGap, y: rotBtnY, w: rotBtnW, h: rotBtnH, label: 'R ►' };
+
+  const midGap = colW*0.06;
+  let unit = (colW-midGap)/3;
+  unit = Math.min(unit, rowH*0.95);
+  const zoneW = unit*3 + midGap;
+  const zoneX = rightX + (colW-zoneW)/2;
+  const elev = {
+    trackX: zoneX, trackY: botY, trackW: unit, trackH: rowH*0.85,
+    labelY: botY+rowH*0.92, labelFontMax: rowH*0.14
+  };
+  const elevHit = { x: zoneX, y: botY, w: unit, h: rowH };
+  const fireX = zoneX+unit+midGap;
+  const btnGap = rowH*0.05;
+  const btnH = (rowH-btnGap)/2;
+  const btnFire = { x: fireX, y: botY, w: unit*2, h: btnH, label: 'FIRE' };
+  const btnReload = { x: fireX, y: botY+btnH+btnGap, w: unit*2, h: btnH, label: 'RELOAD' };
+
+  return {
+    rowScoreY: 0, rowScoreH,
+    radar, joystick, compass,
+    btnRotateLeft, btnRotateRight,
+    elev, elevHit, btnFire, btnReload
+  };
+}
+function computeLayoutLandscape(){
+  const paneW = W*0.25;
+  const leftX = 0, rightX = W-paneW;
+  const padY = H*0.03, padX = paneW*0.08;
+  const contentW = paneW - padX*2;
+
+  const scoreH = H*0.1;
+  const rowGap = H*0.03;
+  const rowH = (H - scoreH - padY*2 - rowGap)/2;
+  const radarY = padY+scoreH, joyY = radarY+rowH+rowGap;
+
+  // rev2: radar oversized on purpose, pokes up above the pane's top edge
+  // into the periscope viewport -- see the matching comment in
+  // computeLayoutPortrait().
+  const radarR = Math.min(contentW*0.95, rowH*0.98);
+  const radar = { cx: leftX+paneW/2, cy: radarY+rowH*0.42, r: radarR };
+  const joystick = { cx: leftX+paneW/2, cy: joyY+rowH/2, r: Math.min(contentW, rowH)*0.48 };
+
+  const compassCYFrac = 0.30, rotBtnYFrac = 0.62;
+  const dialR = Math.min(contentW*0.46, rowH*compassCYFrac);
+  const compass = { cx: rightX+paneW/2, cy: padY+rowH*compassCYFrac, r: dialR };
+  const rotBtnW = Math.min(contentW*0.46, rowH*0.95), rotBtnH = rowH*0.32, rotBtnY = padY+rowH*rotBtnYFrac;
+  const rotGap = rotBtnW*0.15;
+  const rotGroupW = rotBtnW*2 + rotGap;
+  const rotGroupX = rightX+padX + (contentW-rotGroupW)/2;
+  const btnRotateLeft = { x: rotGroupX, y: rotBtnY, w: rotBtnW, h: rotBtnH, label: '◄ L' };
+  const btnRotateRight = { x: rotGroupX+rotBtnW+rotGap, y: rotBtnY, w: rotBtnW, h: rotBtnH, label: 'R ►' };
+
+  const botY = joyY;
+  const midGap = contentW*0.08;
+  let unit = (contentW-midGap)/3;
+  unit = Math.min(unit, rowH*0.9);
+  const zoneW = unit*3 + midGap;
+  const zoneX = rightX+padX + (contentW-zoneW)/2;
+  const elev = {
+    trackX: zoneX, trackY: botY, trackW: unit, trackH: rowH*0.82,
+    labelY: botY+rowH*0.90, labelFontMax: rowH*0.14
+  };
+  const elevHit = { x: zoneX, y: botY, w: unit, h: rowH };
+  const fireX = zoneX+unit+midGap;
+  const btnGap = rowH*0.06;
+  const btnH = (rowH-btnGap)/2;
+  const btnFire = { x: fireX, y: botY, w: unit*2, h: btnH, label: 'FIRE' };
+  const btnReload = { x: fireX, y: botY+btnH+btnGap, w: unit*2, h: btnH, label: 'RELOAD' };
+
+  return {
+    rowScoreY: 0, rowScoreH: scoreH,
+    radar, joystick, compass,
+    btnRotateLeft, btnRotateRight,
+    elev, elevHit, btnFire, btnReload,
+    scoreCX: leftX+paneW/2
+  };
+}
+
+function drawConsole(){
+  layout = ORIENT==='landscape' ? computeLayoutLandscape() : computeLayoutPortrait();
+  const L = layout;
+  ctx.save();
+  ctx.translate(0, CONSOLE_Y);
+
+  ctx.strokeStyle = 'rgba(77,255,136,0.55)';
+  ctx.lineWidth = 1.3;
+  tripleLine(0, 3, W, 3);
+  drawRivets(0, 3, W, 3);
+
+  // SCORE / LIVES strip
+  ctx.textAlign = ORIENT==='landscape' ? 'center' : 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold ' + Math.round(clamp(L.rowScoreH*0.5, 14, 34)) + 'px "Courier New", monospace';
+  ctx.fillStyle = GREEN;
+  ctx.shadowColor = GREEN; ctx.shadowBlur = 10;
+  const scoreX = ORIENT==='landscape' ? L.scoreCX : W*0.03;
+  ctx.fillText(String(score).padStart(6,'0'), scoreX, L.rowScoreY+L.rowScoreH*0.68);
+  ctx.shadowBlur = 0;
+  ctx.font = Math.max(9, L.rowScoreH*0.28) + 'px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(77,255,136,0.85)';
+  if(ORIENT==='landscape'){
+    ctx.fillText('TANKS ' + lives, L.scoreCX, L.rowScoreY+L.rowScoreH*0.92);
+  } else {
+    ctx.textAlign = 'right';
+    ctx.fillText('TANKS ' + lives, W*0.97, L.rowScoreY+L.rowScoreH*0.68);
+  }
+
+  drawRadar(L);
+  drawJoystick(L.joystick.cx, L.joystick.cy, L.joystick.r, joystickDX, joystickDY);
+  drawCompassDial(L.compass.cx, L.compass.cy, L.compass.r, turretAngle);
+  drawButton(L.btnRotateLeft, rotateLeftHeld);
+  drawButton(L.btnRotateRight, rotateRightHeld);
+  drawElevSlider(L);
+  if(state==='nameentry'){
+    drawButton(L.btnFire, false, 'SELECT');
+    drawButton(L.btnReload, false, 'SELECT');
+  } else {
+    drawButton(L.btnFire, fireFlashTimer>0, undefined, !loaded);
+    // rev4: passive status light, not a button -- reload is automatic
+    // now (see tryFire()), this just shows RELOADING while it's in
+    // progress and READY once the round is chambered again.
+    drawButton(L.btnReload, reloading, reloading ? 'RELOADING' : 'READY');
+  }
+
+  ctx.restore();
+}
+
+// ---------- MAIN RENDER ----------
+function render(t){
+  ctx.clearRect(0,0,W,H);
+  ctx.save();
+  if(shake > 0){
+    ctx.translate(rand(-4,4)*shake, rand(-4,4)*shake);
+  }
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(VIEW_X, 0, VIEW_W, VIEW_H);
+  ctx.clip();
+  ctx.fillStyle = '#000'; ctx.fillRect(VIEW_X,0,VIEW_W,VIEW_H);
+  drawHorizon();
+  if(state==='playing' || state==='gameover'){
+    drawHills();
+    drawRivers();
+    drawRamparts();
+    drawBuildings();
+    drawBridges();
+    drawWoods();
+    drawEnemyTanks();
+    drawShellsPeriscope();
+    drawAimMarker();
+    drawReticle();
+    drawHitFlash();
+    drawLifeLostOverlay();
+  } else {
+    drawHills();
+    drawRivers();
+    drawRamparts();
+    drawBuildings();
+    drawBridges();
+    drawWoods();
+  }
+  ctx.restore();
+
+  drawFraming();
+  drawConsole();
+  ctx.restore();
+}
+
+renderTitleScreen();
+
+// ---------- MAIN LOOP ----------
+function loop(now){
+  if(!lastTime) lastTime = now;
+  let dt = (now-lastTime)/1000;
+  if(dt > 0.05) dt = 0.05;
+  lastTime = now;
+  try{
+    update(dt);
+    render(now);
+  }catch(err){
+    console.error('Game loop error:', err);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
