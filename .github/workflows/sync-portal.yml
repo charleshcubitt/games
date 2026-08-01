@@ -1,0 +1,62 @@
+name: Sync game revisions to portal
+
+# Keeps neon-flashback.com's `games.source_url` pointed at each game's
+# latest revision, so the manual "update the database after every push"
+# step (see games-portal's README/git history) isn't needed anymore.
+# Driven entirely by games-manifest.json -- see that file for how to add
+# a new game here later.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync each game's latest revision to the portal
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          PORTAL_URL: https://neon-flashback.com
+        run: |
+          set -euo pipefail
+          for row in $(jq -c '.games[]' games-manifest.json); do
+            slug=$(echo "$row" | jq -r '.slug')
+            dir=$(echo "$row" | jq -r '.dir')
+            prefix=$(echo "$row" | jq -r '.prefix')
+
+            latest=$(ls "${dir}/${prefix}"*.html 2>/dev/null | sort -V | tail -1 || true)
+            if [ -z "$latest" ]; then
+              echo "::warning::No revision files found for $slug (${dir}/${prefix}*.html) -- skipping"
+              continue
+            fi
+            filename=$(basename "$latest")
+            source_url="https://charleshcubitt.github.io/games/${dir}/${filename}"
+
+            echo "Waiting for $source_url to publish on GitHub Pages..."
+            live=""
+            for i in $(seq 1 20); do
+              status=$(curl -s -o /dev/null -w "%{http_code}" "$source_url")
+              if [ "$status" = "200" ]; then live="1"; break; fi
+              sleep 5
+            done
+            if [ -z "$live" ]; then
+              echo "::error::$source_url never returned 200 after 100s -- not updating $slug"
+              continue
+            fi
+
+            echo "Updating portal: $slug -> $source_url"
+            http_code=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST "$PORTAL_URL/api/admin/update-game-source" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"slug\":\"${slug}\",\"sourceUrl\":\"${source_url}\"}")
+            echo "Portal responded $http_code: $(cat /tmp/resp.json)"
+            if [ "$http_code" != "200" ]; then
+              # A 404 here just means this slug has no `games` row yet --
+              # expected/harmless for a new game not onboarded to the
+              # portal's database yet, see games-manifest.json.
+              echo "::warning::Portal update for $slug returned $http_code"
+            fi
+          done
