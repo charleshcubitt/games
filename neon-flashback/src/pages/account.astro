@@ -1,0 +1,360 @@
+---
+---
+
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<meta name="viewport" content="width=device-width" />
+		<meta name="generator" content={Astro.generator} />
+		<title>Account</title>
+		<style>
+			:root {
+				--green: #4dff88;
+				--green-glow: #33ff66;
+			}
+			* {
+				box-sizing: border-box;
+			}
+			html,
+			body {
+				margin: 0;
+				padding: 0;
+				background: #000;
+			}
+			body {
+				font-family: 'Courier New', monospace;
+				min-height: 100vh;
+				position: relative;
+				isolation: isolate;
+				color: #ddd;
+			}
+			body::before {
+				content: '';
+				position: fixed;
+				inset: 0;
+				z-index: -1;
+				background: radial-gradient(ellipse at center, #0c0c0c 0%, #000 100%);
+			}
+			body::after {
+				content: '';
+				position: fixed;
+				inset: 0;
+				z-index: -1;
+				background: repeating-linear-gradient(
+					to bottom,
+					rgba(0, 0, 0, 0) 0px,
+					rgba(0, 0, 0, 0) 1px,
+					rgba(0, 40, 10, 0.12) 2px,
+					rgba(0, 40, 10, 0.12) 3px
+				);
+			}
+			.wrap {
+				max-width: 32rem;
+				margin: 0 auto;
+				padding: 2.5rem 1rem 4rem;
+			}
+			.site-title {
+				text-align: center;
+				font-weight: bold;
+				font-size: clamp(1.6rem, 7vw, 2.2rem);
+				letter-spacing: 0.3em;
+				margin: 0 0 1.5rem;
+				color: var(--green);
+				text-shadow:
+					0 0 10px var(--green-glow),
+					0 0 22px rgba(51, 255, 102, 0.6);
+			}
+			.site-title a {
+				color: inherit;
+				text-decoration: none;
+			}
+			h1 {
+				font-size: 1.4rem;
+				letter-spacing: 0.15em;
+				color: #eee;
+			}
+			section {
+				margin-top: 2rem;
+				border: 1px solid rgba(255, 255, 255, 0.15);
+				border-radius: 0.4rem;
+				padding: 1rem;
+			}
+			h2 {
+				font-size: 1rem;
+				letter-spacing: 0.1em;
+				margin: 0 0 0.75rem;
+				color: var(--green);
+				text-shadow: 0 0 6px rgba(51, 255, 102, 0.5);
+			}
+			form {
+				display: flex;
+				gap: 0.5rem;
+			}
+			input {
+				flex: 1;
+				padding: 0.6rem;
+				font-size: 1rem;
+				font-family: inherit;
+				background: #000;
+				border: 1px solid rgba(77, 255, 136, 0.4);
+				border-radius: 0.3rem;
+				color: #eee;
+			}
+			input:focus {
+				outline: none;
+				border-color: var(--green);
+				box-shadow: 0 0 8px rgba(51, 255, 102, 0.5);
+			}
+			button {
+				padding: 0.6rem 1rem;
+				font-size: 1rem;
+				font-family: inherit;
+				cursor: pointer;
+				background: none;
+				border: 1px solid rgba(77, 255, 136, 0.5);
+				border-radius: 0.3rem;
+				color: var(--green);
+				text-shadow: 0 0 6px rgba(51, 255, 102, 0.6);
+			}
+			button:hover {
+				border-color: var(--green);
+				box-shadow: 0 0 10px rgba(51, 255, 102, 0.5);
+			}
+			.error {
+				color: #ff6b6b;
+				font-size: 0.9rem;
+				margin-top: 0.5rem;
+			}
+			.ok {
+				color: var(--green);
+				font-size: 0.9rem;
+				margin-top: 0.5rem;
+				text-shadow: 0 0 6px rgba(51, 255, 102, 0.5);
+			}
+			ul {
+				padding-left: 1.2rem;
+			}
+			.status-active {
+				color: var(--green);
+				text-shadow: 0 0 6px rgba(51, 255, 102, 0.5);
+			}
+			.status-inactive {
+				color: #888;
+			}
+			nav a {
+				font-size: 0.9rem;
+				color: var(--green);
+			}
+			a {
+				color: var(--green);
+			}
+		</style>
+	</head>
+	<body>
+		<div class="wrap">
+		<p class="site-title"><a href="/">RETRO GAMES</a></p>
+		<nav><a href="/">&larr; Games</a></nav>
+		<div id="signed-out" style="display: none">
+			<h1>Account</h1>
+			<p>You need to <a href="/login">log in</a> to view your account.</p>
+		</div>
+
+		<div id="signed-in" style="display: none">
+			<h1>Account</h1>
+			<p id="who"></p>
+
+			<section>
+				<h2>Access</h2>
+				<p id="access-status">Loading...</p>
+				<ul id="subscriptions"></ul>
+			</section>
+
+			<section id="subscribe-section" style="display: none">
+				<h2>Subscribe</h2>
+				<p>$2.99/month, all-access, cancel anytime.</p>
+				<div id="paypal-button-container"></div>
+				<p id="paypal-message"></p>
+			</section>
+
+			<section>
+				<h2>Redeem a voucher code</h2>
+				<form id="voucher-form">
+					<input id="voucher-code" type="text" placeholder="Voucher code" autocomplete="off" />
+					<button type="submit">Redeem</button>
+				</form>
+				<p id="voucher-message"></p>
+			</section>
+
+			<section>
+				<h2>Redeemed codes</h2>
+				<ul id="redemptions"></ul>
+			</section>
+		</div>
+		</div>
+
+		<script>
+			import { authClient } from '../lib/auth';
+
+			const signedOutEl = document.getElementById('signed-out')!;
+			const signedInEl = document.getElementById('signed-in')!;
+			const whoEl = document.getElementById('who')!;
+			const accessStatusEl = document.getElementById('access-status')!;
+			const subscriptionsEl = document.getElementById('subscriptions')!;
+			const redemptionsEl = document.getElementById('redemptions')!;
+			const subscribeSectionEl = document.getElementById('subscribe-section')!;
+			const paypalMessageEl = document.getElementById('paypal-message')!;
+			const voucherForm = document.getElementById('voucher-form') as HTMLFormElement;
+			const voucherCodeInput = document.getElementById('voucher-code') as HTMLInputElement;
+			const voucherMessageEl = document.getElementById('voucher-message')!;
+
+			let currentToken: string | null = null;
+			let paypalSdkLoaded = false;
+			let paypalButtonsRendered = false;
+
+			function loadPaypalSdk(): Promise<void> {
+				if (paypalSdkLoaded) return Promise.resolve();
+				return new Promise((resolve, reject) => {
+					const script = document.createElement('script');
+					const clientId = import.meta.env.PUBLIC_PAYPAL_CLIENT_ID;
+					script.src = `https://www.paypal.com/sdk/js?client-id=${clientId}&vault=true&intent=subscription`;
+					script.addEventListener('load', () => {
+						paypalSdkLoaded = true;
+						resolve();
+					});
+					script.addEventListener('error', () => reject(new Error('Failed to load PayPal SDK')));
+					document.head.append(script);
+				});
+			}
+
+			async function renderPaypalButtons() {
+				if (paypalButtonsRendered || !currentToken) return;
+				paypalButtonsRendered = true;
+				await loadPaypalSdk();
+
+				const planId = import.meta.env.PUBLIC_PAYPAL_PLAN_ID;
+				const token = currentToken;
+
+				// @ts-expect-error -- paypal global comes from the SDK script tag
+				window.paypal
+					.Buttons({
+						createSubscription: (_data: unknown, actions: any) => actions.subscription.create({ plan_id: planId }),
+						onApprove: async (data: { subscriptionID: string }) => {
+							paypalMessageEl.textContent = 'Confirming...';
+							paypalMessageEl.className = '';
+							const res = await fetch('/api/paypal/record-subscription', {
+								method: 'POST',
+								headers: {
+									Authorization: `Bearer ${token}`,
+									'Content-Type': 'application/json',
+								},
+								body: JSON.stringify({ subscriptionId: data.subscriptionID }),
+							});
+							if (res.ok) {
+								paypalMessageEl.textContent = 'Subscribed!';
+								paypalMessageEl.className = 'ok';
+								await loadAccount();
+							} else {
+								paypalMessageEl.textContent = 'Payment approved, but confirming it failed -- refresh and check your account.';
+								paypalMessageEl.className = 'error';
+							}
+						},
+						onError: () => {
+							paypalMessageEl.textContent = 'Something went wrong with PayPal.';
+							paypalMessageEl.className = 'error';
+						},
+					})
+					.render('#paypal-button-container');
+			}
+
+			async function loadAccount() {
+				if (!currentToken) return;
+				const res = await fetch('/api/account', {
+					headers: { Authorization: `Bearer ${currentToken}` },
+				});
+				if (!res.ok) {
+					accessStatusEl.textContent = 'Could not load account details.';
+					return;
+				}
+				const data = await res.json();
+
+				accessStatusEl.textContent = data.active ? 'You have full access.' : 'No active access.';
+				accessStatusEl.className = data.active ? 'status-active' : 'status-inactive';
+
+				if (data.active) {
+					subscribeSectionEl.style.display = 'none';
+				} else {
+					subscribeSectionEl.style.display = 'block';
+					renderPaypalButtons();
+				}
+
+				subscriptionsEl.innerHTML = '';
+				for (const sub of data.subscriptions) {
+					const li = document.createElement('li');
+					const end = sub.current_period_end ? new Date(sub.current_period_end).toLocaleDateString() : 'n/a';
+					li.textContent = `${sub.status} (renews/ends ${end}${sub.cancel_at_period_end ? ', will not renew' : ''})`;
+					subscriptionsEl.append(li);
+				}
+
+				redemptionsEl.innerHTML = '';
+				if (data.redemptions.length === 0) {
+					const li = document.createElement('li');
+					li.textContent = 'None yet.';
+					redemptionsEl.append(li);
+				}
+				for (const r of data.redemptions) {
+					const li = document.createElement('li');
+					const when = new Date(r.redeemed_at).toLocaleDateString();
+					li.textContent = `${r.code} -- redeemed ${when}`;
+					redemptionsEl.append(li);
+				}
+			}
+
+			voucherForm.addEventListener('submit', async (e) => {
+				e.preventDefault();
+				voucherMessageEl.textContent = '';
+				voucherMessageEl.className = '';
+				if (!currentToken) return;
+
+				const res = await fetch('/api/redeem-voucher', {
+					method: 'POST',
+					headers: {
+						Authorization: `Bearer ${currentToken}`,
+						'Content-Type': 'application/json',
+					},
+					body: JSON.stringify({ code: voucherCodeInput.value.trim() }),
+				});
+				const data = await res.json();
+
+				if (res.ok) {
+					voucherMessageEl.textContent = 'Code redeemed!';
+					voucherMessageEl.className = 'ok';
+					voucherCodeInput.value = '';
+					await loadAccount();
+				} else {
+					voucherMessageEl.textContent = data.error ?? 'Something went wrong.';
+					voucherMessageEl.className = 'error';
+				}
+			});
+
+			async function init() {
+				const session = await authClient.getSession();
+				const email = session.data?.user?.email ?? null;
+				currentToken = session.data?.session?.token ?? null;
+
+				if (!email || !currentToken) {
+					signedOutEl.style.display = 'block';
+					signedInEl.style.display = 'none';
+					return;
+				}
+
+				signedOutEl.style.display = 'none';
+				signedInEl.style.display = 'block';
+				whoEl.textContent = `Signed in as ${email}.`;
+				await loadAccount();
+			}
+
+			init();
+		</script>
+	</body>
+</html>

@@ -1,0 +1,83 @@
+---
+export const prerender = false;
+const { slug } = Astro.params;
+---
+
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Loading game...</title>
+		<style>
+			html, body {
+				margin: 0;
+				padding: 0;
+				height: 100%;
+				background: #000;
+			}
+			#message {
+				font-family: system-ui, sans-serif;
+				color: #eee;
+				max-width: 28rem;
+				margin: 4rem auto;
+				padding: 0 1rem;
+				text-align: center;
+			}
+			#message a {
+				color: #6cf;
+			}
+			iframe {
+				display: none;
+				position: fixed;
+				inset: 0;
+				width: 100%;
+				height: 100%;
+				border: none;
+			}
+		</style>
+	</head>
+	<body data-slug={slug}>
+		<div id="message">Loading...</div>
+		<iframe id="game-frame" allow="autoplay; gamepad"></iframe>
+
+		<script>
+			import { authClient } from '../../lib/auth';
+
+			const slug = document.body.dataset.slug!;
+			const messageEl = document.getElementById('message')!;
+			const frameEl = document.getElementById('game-frame') as HTMLIFrameElement;
+
+			async function init() {
+				const session = await authClient.getSession();
+				const token = session.data?.session?.token ?? null;
+
+				const res = await fetch(`/api/play/${slug}`, {
+					headers: token ? { Authorization: `Bearer ${token}` } : {},
+				});
+
+				if (res.ok) {
+					const html = await res.text();
+					const blob = new Blob([html], { type: 'text/html' });
+					frameEl.src = URL.createObjectURL(blob);
+					frameEl.style.display = 'block';
+					messageEl.style.display = 'none';
+					document.title = 'Playing...';
+					return;
+				}
+
+				const data = await res.json().catch(() => ({}));
+				if (data.error === 'login_required') {
+					messageEl.innerHTML = 'You need to <a href="/login">log in</a> to play this game.';
+				} else if (data.error === 'subscription_required') {
+					messageEl.innerHTML = 'This game needs an active subscription. <a href="/account">Subscribe on your account page</a>.';
+				} else if (res.status === 404) {
+					messageEl.innerHTML = 'Game not found. <a href="/">Back to games</a>.';
+				} else {
+					messageEl.textContent = 'Something went wrong loading this game.';
+				}
+			}
+
+			init();
+		</script>
+	</body>
+</html>

@@ -1,0 +1,342 @@
+---
+import { sql } from '../lib/db';
+
+export const prerender = false;
+
+const db = sql();
+const games = await db`select slug, name, has_demo from games where active = true order by id`;
+
+const bgTiles = Array.from({ length: 30 }, (_, i) =>
+	i % 2 === 0 ? '/game-art/space-ship-gameplay.png' : '/game-art/word-game-gameplay.png',
+);
+---
+
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<meta name="viewport" content="width=device-width" />
+		<meta name="generator" content={Astro.generator} />
+		<title>Retro games</title>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+		<style>
+			:root {
+				--green: #4dff88;
+				--green-glow: #33ff66;
+				--cyan: #00fff2;
+				--magenta: #ff00e6;
+			}
+			* {
+				box-sizing: border-box;
+			}
+			html,
+			body {
+				margin: 0;
+				padding: 0;
+				background: #000;
+				color: #ddd;
+			}
+			body {
+				font-family: 'Courier New', monospace;
+				min-height: 100vh;
+				position: relative;
+				isolation: isolate;
+			}
+			.bg-layer {
+				position: fixed;
+				inset: 0;
+				z-index: -1;
+				display: grid;
+				grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+				overflow: hidden;
+				filter: grayscale(1) brightness(1.4) contrast(1.1);
+				opacity: 0.28;
+			}
+			.bg-layer img {
+				width: 100%;
+				aspect-ratio: 480 / 800;
+				object-fit: cover;
+				display: block;
+			}
+			.bg-layer::after {
+				content: '';
+				position: absolute;
+				inset: 0;
+				background: repeating-linear-gradient(
+					to bottom,
+					rgba(0, 0, 0, 0) 0px,
+					rgba(0, 0, 0, 0) 1px,
+					rgba(0, 0, 0, 0.35) 2px,
+					rgba(0, 0, 0, 0.35) 3px
+				);
+			}
+			.content {
+				position: relative;
+				max-width: 44rem;
+				margin: 0 auto;
+				padding: 2.5rem 1rem 4rem;
+			}
+			header {
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 0.75rem;
+				margin-bottom: 2.5rem;
+				text-align: center;
+			}
+			h1 {
+				font-family: 'Courier New', monospace;
+				font-weight: bold;
+				font-size: clamp(2.2rem, 8vw, 3.5rem);
+				letter-spacing: 0.35em;
+				margin: 0;
+				color: var(--green);
+				text-shadow:
+					0 0 12px var(--green-glow),
+					0 0 28px rgba(51, 255, 102, 0.6);
+			}
+			#auth-status {
+				font-size: 0.9rem;
+				color: #a8f5c0;
+			}
+			/* renderAuthStatus() builds this subtree with createElement, so
+			   these elements never get Astro's scoped-style attribute --
+			   :global() is required or the rules silently never match. */
+			:global(#auth-status a),
+			:global(#auth-status button) {
+				font-size: 0.9rem;
+				color: var(--green);
+			}
+			:global(#auth-status button) {
+				background: none;
+				border: 1px solid rgba(77, 255, 136, 0.5);
+				border-radius: 0.3rem;
+				text-decoration: none;
+				cursor: pointer;
+				padding: 0.3rem 0.7rem;
+				font: inherit;
+			}
+			ul {
+				list-style: none;
+				padding: 0;
+				margin: 0;
+				display: flex;
+				flex-direction: column;
+				gap: 1.5rem;
+			}
+			li {
+				background: rgba(0, 0, 0, 0.75);
+				border: 2px solid rgba(255, 255, 255, 0.2);
+				border-radius: 0.5rem;
+				padding: 1rem;
+				display: flex;
+				align-items: center;
+				gap: 1.25rem;
+			}
+			.icon {
+				flex: none;
+				width: 140px;
+				height: 100px;
+				object-fit: cover;
+				object-position: top;
+				border-radius: 0.35rem;
+				image-rendering: pixelated;
+			}
+			.game-info {
+				flex: 1;
+				min-width: 0;
+				display: flex;
+				flex-direction: column;
+				gap: 0.5rem;
+			}
+			.game-name {
+				margin: 0;
+				font-size: 1.6rem;
+				line-height: 1.15;
+			}
+			li[data-slug='space-ship'] {
+				border-color: rgba(255, 255, 255, 0.45);
+			}
+			li[data-slug='space-ship'] .icon {
+				border: 1px solid rgba(255, 255, 255, 0.5);
+			}
+			li[data-slug='space-ship'] .game-name {
+				font-family: 'Courier New', monospace;
+				color: #fff;
+				letter-spacing: 0.2em;
+				text-shadow:
+					0 0 10px #fff,
+					0 0 20px rgba(255, 255, 255, 0.6);
+			}
+			li[data-slug='word-game'] {
+				border-color: rgba(0, 255, 242, 0.45);
+			}
+			li[data-slug='word-game'] .icon {
+				border: 1px solid rgba(0, 255, 242, 0.5);
+			}
+			li[data-slug='word-game'] .game-name {
+				font-family: 'Press Start 2P', 'Courier New', monospace;
+				font-size: 1.1rem;
+				color: var(--cyan);
+				text-shadow:
+					0 0 8px var(--cyan),
+					0 0 18px rgba(0, 255, 242, 0.6);
+			}
+			.actions {
+				display: flex;
+				gap: 1rem;
+				align-items: center;
+				flex-wrap: wrap;
+			}
+			/* renderGameActions() rebuilds this subtree with createElement,
+			   same Astro-scoping caveat as #auth-status above. */
+			:global(.actions a) {
+				color: var(--green);
+				text-decoration: none;
+				border: 1px solid rgba(77, 255, 136, 0.5);
+				border-radius: 0.3rem;
+				padding: 0.3rem 0.7rem;
+				font-size: 0.9rem;
+				text-shadow: 0 0 6px rgba(51, 255, 102, 0.6);
+			}
+			:global(.actions a:hover) {
+				border-color: var(--green);
+				box-shadow: 0 0 10px rgba(51, 255, 102, 0.5);
+			}
+			:global(.status) {
+				font-size: 0.85rem;
+				color: #999;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="bg-layer">
+			{bgTiles.map((src) => <img src={src} alt="" loading="lazy" />)}
+		</div>
+
+		<div class="content">
+			<header>
+				<h1>RETRO GAMES</h1>
+				<div id="auth-status">Checking session...</div>
+			</header>
+
+			<ul id="game-list">
+				{
+					games.map((game: any) => (
+						<li data-slug={game.slug} data-has-demo={game.has_demo}>
+							<img class="icon" src={`/game-art/${game.slug}-title.png`} alt="" loading="lazy" />
+							<div class="game-info">
+								<h2 class="game-name">{game.name}</h2>
+								<span class="actions" data-role="actions">
+									<span class="status">loading...</span>
+								</span>
+							</div>
+						</li>
+					))
+				}
+			</ul>
+		</div>
+
+		<script>
+			import { authClient } from '../lib/auth';
+
+			const authStatusEl = document.getElementById('auth-status')!;
+
+			function renderAuthStatus(email: string | null) {
+				if (email) {
+					authStatusEl.textContent = '';
+					const span = document.createElement('span');
+					span.textContent = `${email} `;
+					const accountLink = document.createElement('a');
+					accountLink.href = '/account';
+					accountLink.textContent = 'Account';
+					accountLink.style.marginRight = '0.5rem';
+					const signOutBtn = document.createElement('button');
+					signOutBtn.textContent = 'Sign out';
+					signOutBtn.addEventListener('click', async () => {
+						await authClient.signOut();
+						location.reload();
+					});
+					authStatusEl.append(span, accountLink, signOutBtn);
+				} else {
+					authStatusEl.innerHTML = '<a href="/login">Log in</a>';
+				}
+			}
+
+			function renderGameActions(slug: string, hasDemo: boolean, hasAccess: boolean, signedIn: boolean) {
+				const li = document.querySelector(`li[data-slug="${slug}"] [data-role="actions"]`);
+				if (!li) return;
+				li.innerHTML = '';
+
+				const url = `/play/${slug}`;
+
+				if (hasAccess) {
+					const play = document.createElement('a');
+					play.href = url;
+					play.textContent = 'Play';
+					li.append(play);
+					return;
+				}
+
+				if (hasDemo) {
+					const demo = document.createElement('a');
+					demo.href = url;
+					demo.textContent = 'Play demo';
+					li.append(demo);
+				}
+
+				if (signedIn) {
+					const subscribe = document.createElement('a');
+					subscribe.href = '/account';
+					subscribe.textContent = 'Subscribe for full access';
+					li.append(subscribe);
+				} else {
+					const note = document.createElement('span');
+					note.className = 'status';
+					note.textContent = 'Log in to unlock';
+					li.append(note);
+				}
+			}
+
+			async function init() {
+				const session = await authClient.getSession();
+				const email = session.data?.user?.email ?? null;
+				renderAuthStatus(email);
+
+				let hasAccess = false;
+				if (email) {
+					try {
+						// getSession()'s response already carries a signed JWT
+						// at session.token -- no need for the separate
+						// getJWTToken()/get-jwt-token endpoint, which 404s on
+						// this project (that helper likely needs a Better Auth
+						// plugin this Neon Auth project doesn't have enabled).
+						const token = session.data?.session?.token ?? null;
+						if (token) {
+							const res = await fetch('/api/entitlement', {
+								headers: { Authorization: `Bearer ${token}` },
+							});
+							if (res.ok) {
+								const data = await res.json();
+								hasAccess = Boolean(data.active);
+							}
+						}
+					} catch {
+						// Treat any failure to confirm entitlement as locked
+						// rather than leaving the UI stuck on "loading...".
+						hasAccess = false;
+					}
+				}
+
+				document.querySelectorAll<HTMLLIElement>('#game-list li').forEach((li) => {
+					const slug = li.dataset.slug!;
+					const hasDemo = li.dataset.hasDemo === 'true';
+					renderGameActions(slug, hasDemo, hasAccess, Boolean(email));
+				});
+			}
+
+			init();
+		</script>
+	</body>
+</html>
