@@ -1,0 +1,1460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tron">
+<link rel="manifest" href="data:application/manifest+json,{%22name%22:%22Tron%22,%22short_name%22:%22Tron%22,%22display%22:%22fullscreen%22,%22start_url%22:%22.%22,%22background_color%22:%22%23000000%22,%22theme_color%22:%22%23000000%22}">
+<title>TRON // LIGHT CYCLES</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%;
+    background:#000;
+    overflow:hidden;
+    font-family:'Courier New', monospace;
+  }
+  #wrap {
+    position:fixed;
+    top:0; left:0;
+    display:flex; align-items:center; justify-content:center;
+    background:radial-gradient(ellipse at center, #030608 0%, #000000 100%);
+  }
+  canvas {
+    background:#000;
+    cursor:crosshair;
+    display:block;
+    touch-action:none;
+    -webkit-user-select:none;
+    user-select:none;
+  }
+  /* CRT scanline overlay -- same technique as the other games in this repo */
+  #wrap::after {
+    content:'';
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    background:repeating-linear-gradient(
+      to bottom,
+      rgba(0,0,0,0) 0px,
+      rgba(0,0,0,0) 1px,
+      rgba(0,0,0,0.18) 2px,
+      rgba(0,0,0,0.18) 3px
+    );
+    mix-blend-mode:multiply;
+  }
+  #centerMsg {
+    position:absolute;
+    top:34%; left:50%;
+    transform:translate(-50%,-50%);
+    text-align:center;
+    color:#7ff9ff;
+    text-shadow:0 0 12px #0ff, 0 0 24px rgba(0,255,255,0.6);
+    pointer-events:none;
+    user-select:none;
+    background:rgba(0,8,10,0.72);
+    border:1px solid rgba(0,255,255,0.25);
+    padding:20px 26px;
+    border-radius:4px;
+    max-width:340px;
+  }
+  #centerMsg h1 {
+    font-size:34px;
+    letter-spacing:8px;
+    margin-bottom:10px;
+    color:#fff;
+    animation: flicker 2.2s infinite;
+  }
+  #centerMsg p {
+    font-size:12.5px;
+    letter-spacing:1px;
+    color:#a8f6ff;
+    text-shadow:0 0 6px rgba(0,255,255,0.6);
+    margin-top:5px;
+  }
+  #centerMsg .small {
+    font-size:12px;
+    color:#5c9aa3;
+    margin-top:18px;
+  }
+  #centerMsg .heading {
+    font-size:22px;
+    letter-spacing:5px;
+    margin-top:20px;
+    margin-bottom:8px;
+    color:#fff;
+  }
+  #centerMsg .btn {
+    display:inline-block;
+    margin-top:16px;
+    padding:10px 26px;
+    border:2px solid rgba(0,255,255,0.6);
+    border-radius:4px;
+    font-size:13px;
+    letter-spacing:3px;
+    box-shadow:0 0 10px rgba(0,255,255,0.15);
+    pointer-events:auto;
+    cursor:pointer;
+  }
+  #centerMsg .lb {
+    display:inline-block;
+    text-align:left;
+    min-width:260px;
+    margin-top:4px;
+  }
+  #centerMsg .lbrow {
+    display:flex;
+    justify-content:space-between;
+    font-size:11px;
+    padding:2px 0;
+    color:#7fd0d9;
+  }
+  #centerMsg .lbrow.top { color:#fff; text-shadow:0 0 6px rgba(0,255,255,0.8); }
+  #centerMsg .digits {
+    display:flex;
+    justify-content:center;
+    gap:12px;
+    margin:16px 0;
+  }
+  #centerMsg .digitBox {
+    width:46px; height:60px;
+    border:2px solid rgba(0,255,255,0.45);
+    border-radius:6px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:28px; font-weight:bold;
+    color:#fff;
+  }
+  #centerMsg .digitBox.active {
+    border-color:#0ff;
+    box-shadow:0 0 14px rgba(0,255,255,0.7);
+  }
+  @keyframes flicker {
+    0%, 19%, 21%, 23%, 54%, 56%, 100% { opacity:1; }
+    20%, 22%, 55% { opacity:0.6; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="390" height="844"></canvas>
+  <div id="centerMsg"></div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const centerMsg = document.getElementById('centerMsg');
+const wrap = document.getElementById('wrap');
+
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+
+// ---------- LAYOUT ----------
+// Same device-capability-driven ORIENT system as space-ship (rev26+):
+// pointer/hover media features tell mouse+keyboard devices apart from
+// touch-primary ones (phones AND tablets, even landscape) far more
+// reliably than screen size ever could. Unlike space-ship's console
+// (which needs real estate for a joystick/dials), Tron's only touch
+// controls are two full-height tap zones over the viewport itself, so
+// there's no need for space-ship's landscape/desktop side-pane split --
+// a single bottom console strip (score + minimap) works in every
+// orientation, and it stays as slim as possible since the whole point
+// of this genre is seeing the terrain.
+let W, H, VIEW_H, VIEW_W, VIEW_X, CONSOLE_Y, CONSOLE_H, CENTER_X, CENTER_Y, ORIENT;
+
+function isDesktopInput(){
+  return window.matchMedia('(pointer: fine)').matches &&
+         window.matchMedia('(hover: hover)').matches;
+}
+function getViewportSize(){
+  if(window.visualViewport){
+    return { w: window.visualViewport.width, h: window.visualViewport.height };
+  }
+  return { w: window.innerWidth, h: window.innerHeight };
+}
+function resizeCanvas(){
+  const vp = getViewportSize();
+  W = Math.round(vp.w);
+  H = Math.round(vp.h);
+  canvas.width = W; canvas.height = H;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  wrap.style.width = W + 'px';
+  wrap.style.height = H + 'px';
+  ORIENT = isDesktopInput() ? 'desktop' : (W > H ? 'landscape' : 'portrait');
+  VIEW_X = 0;
+  VIEW_W = W;
+  // Landscape/desktop get a thinner console (more width than height to
+  // spare, and no joystick/dials competing for it) than portrait's.
+  const consoleFrac = ORIENT === 'portrait' ? 0.16 : 0.12;
+  VIEW_H = Math.round(H * (1 - consoleFrac));
+  CONSOLE_Y = VIEW_H;
+  CONSOLE_H = H - VIEW_H;
+  CENTER_X = W / 2;
+  // Horizon sits in the upper third of the viewport -- chase-cam looks
+  // mostly at the ground/track ahead, with a slim band of "sky" above.
+  CENTER_Y = VIEW_H * 0.32;
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('orientationchange', resizeCanvas);
+if(window.visualViewport){
+  window.visualViewport.addEventListener('resize', resizeCanvas);
+}
+
+// ---------- CAMERA / PROJECTION ----------
+// World space: x = left/right, z = forward/back, y = height (0 = ground
+// level of the MID grid layer -- see LEVEL_HEIGHTS below). Heading is a
+// compass-style angle: 0 = facing +z, 90deg = facing +x, etc. (direction
+// vector = (sin(heading), cos(heading))) -- always one of the 4 cardinal
+// values, since squads only ever travel in straight lines and turn in
+// instant right angles.
+const FOV_SCALE = 220;
+const NEAR = 1.2;
+// rev3: pulled back/up and pitched down from rev2's single-bike chase-cam
+// so the whole 3-wide red formation reads comfortably in frame ("third
+// person point of view looking down at the three player motorcycles").
+const CAM_HEIGHT_PLAY = 4.6;
+const CAM_FOLLOW_PLAY = 8.5;
+const PITCH_PLAY = 0.24; // fixed downward tilt, radians -- see project()
+// Startup "materializing" close-up shot -- unchanged tight framing from rev2.
+const CAM_HEIGHT_INTRO = 1.5;
+const CAM_FOLLOW_INTRO = 2.4;
+
+// rev3: three stacked ride-able grid layers. Ramps (see PROCEDURAL RAMPS
+// section) flip a whole squad's level instantly -- "escape the
+// opposition by taking a ramp to a different level."
+const LEVEL_HEIGHTS = [-9, 0, 9]; // lower / mid / upper
+const LEVEL_MID = 1;
+function levelY(levelIdx){ return LEVEL_HEIGHTS[levelIdx]; }
+// The level whose grid is the active "floor" this frame -- normally the
+// player's own level, but during the kill-cam it's whichever level the
+// crashed bike was actually on (player.x/z/level freeze at crash time,
+// but the camera cuts to the crash focus instead of the player).
+function currentFloorLevel(){
+  return (state === 'killcam' && killcamFocus) ? killcamFocus.level : player.level;
+}
+function currentPitch(){ return state === 'play' ? PITCH_PLAY : 0; }
+
+function normalizeHeading(h){
+  const twoPi = Math.PI*2;
+  return ((h % twoPi) + twoPi) % twoPi;
+}
+function headingVec(h){ return { x: Math.sin(h), z: Math.cos(h) }; }
+
+// Camera reads the player's (or kill-cam focus's) CURRENT heading/position
+// directly every frame -- no interpolation, easing, or tween of any kind.
+// When the player turns 90 degrees the whole world visibly snap-rotates on
+// that exact frame, the same hard cut the light-cycle sequences use. The
+// jerky bank (see BANK_* below) is a separate, also-instant screen-space
+// rotation layered on top in render() -- don't "smooth" either one.
+let camState = { x:0, z:0, heading:0, height:0, follow:0 };
+function updateCamState(){
+  if(state === 'killcam' && killcamFocus){
+    camState.x = killcamFocus.x;
+    camState.z = killcamFocus.z;
+    camState.heading = killcamFocus.heading;
+    camState.height = levelY(killcamFocus.level) + CAM_HEIGHT_INTRO;
+    camState.follow = CAM_FOLLOW_INTRO;
+    return;
+  }
+  const intro = state === 'intro';
+  camState.x = player.x;
+  camState.z = player.z;
+  camState.heading = player.heading;
+  camState.height = levelY(player.level) + (intro ? CAM_HEIGHT_INTRO : CAM_HEIGHT_PLAY);
+  camState.follow = intro ? CAM_FOLLOW_INTRO : CAM_FOLLOW_PLAY;
+}
+
+// Projects a world-space point to screen space. Returns null if the
+// point is behind (or too close to) the camera -- callers must handle
+// that (skip, or clip the containing line/segment against NEAR first).
+// rev3 adds a fixed downward PITCH on top of rev1/rev2's yaw-only camera
+// -- one extra rotation step, in the (height, forward-distance) plane,
+// after the existing yaw rotation.
+function project(wx, wy, wz){
+  const camX = camState.x - Math.sin(camState.heading) * camState.follow;
+  const camZ = camState.z - Math.cos(camState.heading) * camState.follow;
+  const dx = wx - camX, dy = wy - camState.height, dz = wz - camZ;
+  const cs = Math.cos(camState.heading), sn = Math.sin(camState.heading);
+  const yawZ = dx*sn + dz*cs;
+  const yawX = dx*cs - dz*sn;
+  const pitch = currentPitch();
+  const pc = Math.cos(pitch), ps = Math.sin(pitch);
+  const camSpaceZ = yawZ*pc - dy*ps;
+  const camSpaceY = yawZ*ps + dy*pc;
+  if(camSpaceZ <= NEAR) return null;
+  const scale = FOV_SCALE / camSpaceZ;
+  return {
+    x: CENTER_X + yawX * scale,
+    y: CENTER_Y - camSpaceY * scale,
+    scale
+  };
+}
+// Projects both ends of a world-space segment, clipping at the near
+// plane if one end is behind the camera and the other isn't -- avoids
+// the grid "popping"/distorting right at the camera as lines cross the
+// clip plane.
+function projectSegment(x1,y1,z1, x2,y2,z2){
+  const camX = camState.x - Math.sin(camState.heading) * camState.follow;
+  const camZ = camState.z - Math.cos(camState.heading) * camState.follow;
+  const cs = Math.cos(camState.heading), sn = Math.sin(camState.heading);
+  const pitch = currentPitch();
+  const pc = Math.cos(pitch), ps = Math.sin(pitch);
+  function toCamSpace(wx,wy,wz){
+    const dx = wx-camX, dy = wy-camState.height, dz = wz-camZ;
+    const yawZ = dx*sn+dz*cs, yawX = dx*cs-dz*sn;
+    return { z: yawZ*pc - dy*ps, x: yawX, y: yawZ*ps + dy*pc };
+  }
+  let a = toCamSpace(x1,y1,z1), b = toCamSpace(x2,y2,z2);
+  if(a.z <= NEAR && b.z <= NEAR) return null;
+  if(a.z <= NEAR || b.z <= NEAR){
+    // Clip the behind-camera end to the near plane by linear
+    // interpolation along the segment in camera space.
+    const behind = a.z <= NEAR ? a : b;
+    const front = a.z <= NEAR ? b : a;
+    const t = (NEAR - front.z) / (behind.z - front.z);
+    const clipped = {
+      z: NEAR,
+      x: front.x + (behind.x-front.x)*t,
+      y: front.y + (behind.y-front.y)*t
+    };
+    if(a.z <= NEAR) a = clipped; else b = clipped;
+  }
+  const sa = FOV_SCALE/a.z, sb = FOV_SCALE/b.z;
+  return {
+    x1: CENTER_X + a.x*sa, y1: CENTER_Y - a.y*sa,
+    x2: CENTER_X + b.x*sb, y2: CENTER_Y - b.y*sb
+  };
+}
+
+// ---------- WIREFRAME GRID -- floor + mirrored ceiling, infinite streaming ----------
+// rev3: the grid is no longer world-anchored at a fixed extent (rev2) --
+// each frame it's rebuilt from whichever GRID_SPACING-aligned lines fall
+// within VIEW_RADIUS of the camera's CURRENT position, so it always
+// reads as an endless plane that "spawns" fresh lines at the horizon as
+// you travel, no matter how far a run has gone.
+const GRID_SPACING = 1;
+const TRACE_EVERY = 4;
+const VIEW_RADIUS = 46;
+
+// Shared by the floor and its mirrored ceiling -- draws the grid lines
+// of a horizontal plane at world height `y`, centered on (refX, refZ).
+// Since the camera pitch/yaw are the same for every plane, floor and
+// ceiling naturally vanish into the same horizon point.
+function drawGridPlane(y, refX, refZ){
+  ctx.save();
+  ctx.lineCap = 'butt';
+  const iCenter = Math.round(refX/GRID_SPACING);
+  const jCenter = Math.round(refZ/GRID_SPACING);
+  const n = Math.round(VIEW_RADIUS/GRID_SPACING);
+  const zMin = refZ-VIEW_RADIUS, zMax = refZ+VIEW_RADIUS;
+  const xMin = refX-VIEW_RADIUS, xMax = refX+VIEW_RADIUS;
+  for(let i=iCenter-n; i<=iCenter+n; i++){
+    const x = i*GRID_SPACING;
+    const seg = projectSegment(x,y,zMin, x,y,zMax);
+    if(!seg) continue;
+    const major = (i % TRACE_EVERY === 0);
+    ctx.strokeStyle = major ? 'rgba(100,230,255,0.6)' : 'rgba(40,140,170,0.16)';
+    ctx.lineWidth = major ? 1.5 : 1;
+    if(major){ ctx.shadowColor = '#7ff2ff'; ctx.shadowBlur = 7; } else { ctx.shadowBlur = 0; }
+    ctx.beginPath(); ctx.moveTo(seg.x1,seg.y1); ctx.lineTo(seg.x2,seg.y2); ctx.stroke();
+  }
+  for(let j=jCenter-n; j<=jCenter+n; j++){
+    const z = j*GRID_SPACING;
+    const seg = projectSegment(xMin,y,z, xMax,y,z);
+    if(!seg) continue;
+    const major = (j % TRACE_EVERY === 0);
+    ctx.strokeStyle = major ? 'rgba(100,230,255,0.6)' : 'rgba(40,140,170,0.16)';
+    ctx.lineWidth = major ? 1.5 : 1;
+    if(major){ ctx.shadowColor = '#7ff2ff'; ctx.shadowBlur = 7; } else { ctx.shadowBlur = 0; }
+    ctx.beginPath(); ctx.moveTo(seg.x1,seg.y1); ctx.lineTo(seg.x2,seg.y2); ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+function drawGridFloor(){
+  drawGridPlane(levelY(currentFloorLevel()), camState.x, camState.z);
+}
+function drawGridCeiling(){
+  const lvl = currentFloorLevel();
+  if(lvl >= LEVEL_HEIGHTS.length-1) return; // topmost level -- open void above
+  drawGridPlane(levelY(lvl+1), camState.x, camState.z);
+}
+
+// Pure black void, like the film's bare sky. A thin glowing horizon bar
+// marks the vanishing line itself, the way the movie's stark grid/sky
+// cut reads.
+function drawSky(){
+  ctx.save();
+  ctx.fillStyle = '#000';
+  ctx.fillRect(VIEW_X, 0, VIEW_W, CENTER_Y);
+  ctx.restore();
+}
+function drawHorizonBar(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(140,235,255,0.5)';
+  ctx.shadowColor = '#8ff2ff';
+  ctx.shadowBlur = 8;
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(VIEW_X, CENTER_Y+0.5); ctx.lineTo(VIEW_X+VIEW_W, CENTER_Y+0.5); ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+// ---------- PROCEDURAL RAMPS + OBSTACLES ----------
+// The play field is unbounded, so ramps/obstacles are generated
+// deterministically from world-cell coordinates (a cheap 2D hash) rather
+// than a fixed list -- querying "what's near this point" always gives
+// the same answer (stable landmarks), with nothing to track or garbage-
+// collect as a run goes on indefinitely.
+function hash2(i, j){
+  const h = Math.sin(i*127.1 + j*311.7) * 43758.5453;
+  return h - Math.floor(h);
+}
+const SPAWN_SAFE_RADIUS = 14; // keeps the round's starting area clear
+
+const RAMP_CELL = 34;
+function rampCellAt(i, j){
+  if(hash2(i,j) >= 0.35) return null;
+  const cx = i*RAMP_CELL + RAMP_CELL*0.5 + (hash2(i+1,j)-0.5)*RAMP_CELL*0.4;
+  const cz = j*RAMP_CELL + RAMP_CELL*0.5 + (hash2(i,j+1)-0.5)*RAMP_CELL*0.4;
+  const pair = hash2(i+2,j+3) < 0.5 ? [0,1] : [1,2];
+  return { x:cx, z:cz, a:pair[0], b:pair[1], r:4.2 };
+}
+function rampsToRender(refX, refZ, radius){
+  const out = [];
+  const iMin = Math.floor((refX-radius)/RAMP_CELL), iMax = Math.floor((refX+radius)/RAMP_CELL);
+  const jMin = Math.floor((refZ-radius)/RAMP_CELL), jMax = Math.floor((refZ+radius)/RAMP_CELL);
+  for(let i=iMin;i<=iMax;i++){
+    for(let j=jMin;j<=jMax;j++){
+      const r = rampCellAt(i,j);
+      if(r) out.push(r);
+    }
+  }
+  return out;
+}
+
+const OBSTACLE_CELL = 16;
+function obstacleCellAt(i, j, level){
+  if(hash2(i*3+level*97, j*3+level*53) >= 0.22) return null;
+  const ox = i*OBSTACLE_CELL + OBSTACLE_CELL*0.5 + (hash2(i+5,j+level)-0.5)*OBSTACLE_CELL*0.5;
+  const oz = j*OBSTACLE_CELL + OBSTACLE_CELL*0.5 + (hash2(i+level,j+7)-0.5)*OBSTACLE_CELL*0.5;
+  if(level === LEVEL_MID && Math.hypot(ox,oz) < SPAWN_SAFE_RADIUS) return null;
+  return { x:ox, z:oz, level, radius:1.1 };
+}
+function obstaclesToRender(refX, refZ, radius, level){
+  const out = [];
+  const iMin = Math.floor((refX-radius)/OBSTACLE_CELL), iMax = Math.floor((refX+radius)/OBSTACLE_CELL);
+  const jMin = Math.floor((refZ-radius)/OBSTACLE_CELL), jMax = Math.floor((refZ+radius)/OBSTACLE_CELL);
+  for(let i=iMin;i<=iMax;i++){
+    for(let j=jMin;j<=jMax;j++){
+      const o = obstacleCellAt(i,j,level);
+      if(o) out.push(o);
+    }
+  }
+  return out;
+}
+function obstacleAt(px, pz, level){
+  const ci = Math.floor(px/OBSTACLE_CELL), cj = Math.floor(pz/OBSTACLE_CELL);
+  for(let di=-1; di<=1; di++){
+    for(let dj=-1; dj<=1; dj++){
+      const o = obstacleCellAt(ci+di, cj+dj, level);
+      if(o && Math.hypot(px-o.x, pz-o.z) < o.radius + COLLISION_RADIUS) return true;
+    }
+  }
+  return false;
+}
+function drawObstacle(o){
+  const y0 = levelY(o.level), h = 2.4, r = o.radius;
+  const corners = [[-r,-r],[r,-r],[r,r],[-r,r]];
+  const top = corners.map(([cx,cz])=> project(o.x+cx, y0+h, o.z+cz));
+  const bot = corners.map(([cx,cz])=> project(o.x+cx, y0, o.z+cz));
+  if(top.some(p=>!p) || bot.some(p=>!p)) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,200,90,0.85)';
+  ctx.shadowColor = '#ffcf5a';
+  ctx.shadowBlur = 10;
+  ctx.lineWidth = 1.5;
+  for(let i=0;i<4;i++){
+    const j=(i+1)%4;
+    ctx.beginPath(); ctx.moveTo(bot[i].x,bot[i].y); ctx.lineTo(bot[j].x,bot[j].y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(top[i].x,top[i].y); ctx.lineTo(top[j].x,top[j].y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(bot[i].x,bot[i].y); ctx.lineTo(top[i].x,top[i].y); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawRampGate(r){
+  const y0 = levelY(currentFloorLevel()), h = 3.4;
+  const p1 = project(r.x-1.4, y0, r.z), p2 = project(r.x+1.4, y0, r.z);
+  const p1t = project(r.x-1.4, y0+h, r.z), p2t = project(r.x+1.4, y0+h, r.z);
+  if(!p1||!p2||!p1t||!p2t) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,210,90,0.85)';
+  ctx.shadowColor = '#ffd25a';
+  ctx.shadowBlur = 14;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(p1.x,p1.y); ctx.lineTo(p1t.x,p1t.y);
+  ctx.moveTo(p2.x,p2.y); ctx.lineTo(p2t.x,p2t.y);
+  ctx.moveTo(p1t.x,p1t.y); ctx.lineTo(p2t.x,p2t.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ---------- SQUADRONS / TRAILS ----------
+// rev3: each color is now a 3-bike squadron riding in a fixed side-by-
+// side formation, sharing one heading. Turning is a single atomic event
+// for the whole squad (see turnTeam()) -- members never independently
+// diverge, so the "always side by side" formation falls out of normal
+// forward integration for free, no per-frame recomputation needed.
+const WALL_HEIGHT = 2.4;
+const BASE_SPEED = 8;         // world units/sec at round start
+const SPEED_RAMP = 0.15;      // added to speed per second survived
+const SPEED_CAP = 20;
+const COLLISION_RADIUS = 0.35;
+const AI_LOOKAHEAD_TIME = 0.5;
+// rev3: dropped sharply from rev2's 0.05 -- opponents should only rarely
+// throw in an unprompted turn, not constantly cut across.
+const AI_RANDOM_TURN_CHANCE = 0.012;
+const TEAM_SPACING = 2.4;
+
+const CYCLE_STYLES = {
+  player: { fill: 'rgba(255,60,50,0.30)',  edge: '#ff4433' },
+  blue:   { fill: 'rgba(50,160,255,0.28)', edge: '#39aaff' },
+  green:  { fill: 'rgba(60,255,140,0.28)', edge: '#3dffa0' }
+};
+
+function makeCycle(x, z, heading, level, styleKey, isPlayer, team){
+  return {
+    x, z, heading, level, isPlayer, team,
+    style: CYCLE_STYLES[styleKey],
+    trail: [{x, z, level}],
+    alive: true
+  };
+}
+function makeTeam(key, styleKey, centerX, centerZ, heading, playerSlot){
+  const team = { key, heading, level: LEVEL_MID, dead:false, decisionTimer: Math.random()*0.3, rampCooldown: 0, turnGraceTimer: 0, members: [] };
+  const perp = headingVec(normalizeHeading(heading + Math.PI/2));
+  [-TEAM_SPACING, 0, TEAM_SPACING].forEach((off, slot)=>{
+    const isPlayer = playerSlot === slot;
+    const c = makeCycle(centerX+perp.x*off, centerZ+perp.z*off, heading, LEVEL_MID, styleKey, isPlayer, team);
+    team.members.push(c);
+  });
+  return team;
+}
+
+let redTeam, blueTeam, greenTeam, teams, player, cycles;
+let elapsed = 0, currentSpeed = BASE_SPEED, playerDistance = 0, score = 0;
+// rev3: jerky camera bank on every player-team turn -- a STEP, not a
+// tween (see render()). "Sudden ninety degree turn, but it does appear
+// like a sudden banking motion."
+let bankTimer = 0, bankDir = 0;
+const BANK_DURATION = 0.22;
+const BANK_ANGLE = 0.27;
+// Kill-cam particle state -- declared here (ahead of resetGame(), which
+// clears `particles` on every reset) even though the functions that use
+// them live down in the KILLCAM section; `let` bindings aren't hoisted
+// the way function declarations are, so resetGame() -- called immediately
+// below -- would otherwise throw a temporal-dead-zone ReferenceError.
+let killcamTimer = 0;
+let killcamFocus = null;
+let particles = [];
+
+function resetGame(){
+  redTeam   = makeTeam('player', 'player', 0, 0, 0, 1);
+  blueTeam  = makeTeam('blue', 'blue', -18, 0, 0, -1);
+  greenTeam = makeTeam('green', 'green', 18, 0, 0, -1);
+  teams = [redTeam, blueTeam, greenTeam];
+  cycles = [...redTeam.members, ...blueTeam.members, ...greenTeam.members];
+  player = redTeam.members[1];
+  elapsed = 0;
+  currentSpeed = BASE_SPEED;
+  playerDistance = 0;
+  score = 0;
+  bankTimer = 0; bankDir = 0;
+  particles = [];
+}
+resetGame();
+
+// Turning pushes the current position as a new waypoint (closing off
+// the segment just traveled) then snaps the heading 90 degrees. Guards
+// against a near-zero-length segment from a double-tap/double-turn on
+// the same spot, which would otherwise leave a degenerate trail segment.
+function turnCycle(cycle, dir){
+  const last = cycle.trail[cycle.trail.length-1];
+  const distSinceWaypoint = Math.hypot(cycle.x-last.x, cycle.z-last.z);
+  if(distSinceWaypoint < 0.4) return;
+  cycle.trail.push({x: cycle.x, z: cycle.z, level: cycle.level});
+  cycle.heading = normalizeHeading(cycle.heading + (dir==='left' ? -Math.PI/2 : Math.PI/2));
+}
+// Turns every (still-alive) member of a squad in the same instant, same
+// direction. A naive "just turn each bike in place" is NOT enough to
+// keep them side-by-side: their old perpendicular offset is only
+// perpendicular to the OLD heading -- after a 90 degree turn it's
+// PARALLEL to the new one, which would turn the formation into a
+// nose-to-tail line (and drop a wingman directly in its own flight
+// path). So after each member turns in place, the wingmen get an
+// explicit instant snap back to the correct perpendicular offset from
+// the middle bike under the NEW heading -- another "sudden, not eased"
+// transition, consistent with everything else in this game.
+function turnTeam(team, dir){
+  if(team.dead) return;
+  const mid = team.members[1];
+  // Debounced ONCE at the team level (matching turnCycle's own per-cycle
+  // guard) using the middle bike as the reference -- without this, a
+  // duplicate/rapid-fire turn event (double-tap, or a platform that
+  // occasionally double-fires a pointer event) would still unconditionally
+  // re-run the heading increment and wingman reformation-snap below even
+  // though the underlying turnCycle calls no-op'd, desyncing team.heading
+  // from the members' actual headings and re-snapping the wingmen from an
+  // already-current position -- exactly the bug that caused an instant
+  // self-collision the first time this was tested.
+  if(mid.alive){
+    const last = mid.trail[mid.trail.length-1];
+    if(Math.hypot(mid.x-last.x, mid.z-last.z) < 0.4) return;
+  }
+  for(const m of team.members){ if(m.alive) turnCycle(m, dir); }
+  team.heading = normalizeHeading(team.heading + (dir==='left' ? -Math.PI/2 : Math.PI/2));
+  if(mid.alive){
+    const perp = headingVec(normalizeHeading(team.heading + Math.PI/2));
+    const slotOffsets = [-TEAM_SPACING, 0, TEAM_SPACING];
+    team.members.forEach((m, slot)=>{
+      if(!m.alive || slot === 1) return;
+      m.x = mid.x + perp.x*slotOffsets[slot];
+      m.z = mid.z + perp.z*slotOffsets[slot];
+      m.trail.push({x: m.x, z: m.z, level: m.level});
+    });
+  }
+  // The wingmen's new forward direction is, geometrically, the SAME axis
+  // as their own pre-turn trail (see the block comment above) -- their
+  // reformed position starts them right back on a path that will retrace
+  // it after traveling ~TEAM_SPACING forward. That retrace is a geometric
+  // side-effect of keeping the formation side-by-side, not a real crash,
+  // so each member's own trail (not obstacles, not enemy trails) is
+  // exempted from self-collision for a brief beat -- comfortably more
+  // than TEAM_SPACING/BASE_SPEED, the slowest this crossing could ever
+  // happen (speed only ever increases over a run).
+  team.turnGraceTimer = 0.6;
+  if(team.key === 'player'){
+    bankTimer = BANK_DURATION;
+    bankDir = dir==='left' ? -1 : 1;
+  }
+}
+function crashCycle(cycle){
+  if(!cycle.alive) return;
+  cycle.alive = false;
+  cycle.trail.push({x: cycle.x, z: cycle.z, level: cycle.level});
+}
+// rev3: "the three are presented as one coordinated unit" -- if any one
+// member crashes (wingman or not), the WHOLE squad is derezzed together.
+// For the player's squad specifically this also ends the round (via the
+// kill-cam); opposing squads just freeze in place as permanent hazards.
+function crashTeam(team, crashedMember){
+  if(team.dead) return;
+  team.dead = true;
+  for(const m of team.members) crashCycle(m);
+  if(team.key === 'player') triggerKillcam(crashedMember);
+}
+
+// ---------- COLLISION ----------
+function distPointToSegment(px,pz, x1,z1, x2,z2){
+  const dx = x2-x1, dz = z2-z1;
+  const lenSq = dx*dx + dz*dz;
+  if(lenSq < 1e-9) return Math.hypot(px-x1, pz-z1);
+  let t = ((px-x1)*dx + (pz-z1)*dz) / lenSq;
+  t = clamp(t, 0, 1);
+  return Math.hypot(px-(x1+dx*t), pz-(z1+dz*t));
+}
+// Tests a candidate point (at a given LEVEL) against static obstacles and
+// every cycle's trail on that same level.
+//
+// Teammates are exempted from being hazards to EACH OTHER, full stop --
+// see crashTeam(), a squadron always lives or dies together, so a
+// teammate's trail can never be "a separate ongoing threat" the way an
+// enemy's is; the only time one would even geometrically matter is the
+// reformation snap at every turn (see turnTeam), where a wingman's new
+// perpendicular offset otherwise lands right back on the middle bike's
+// own immediately-preceding trail segment.
+//
+// A cycle's OWN trail gets its usual last-segment turn-corner grace, PLUS
+// a brief time-based grace (self.team.turnGraceTimer, set in turnTeam)
+// right after any team turn: the wingmen's new forward direction is
+// geometrically the SAME axis as their own pre-turn trail, so without
+// this they'd retrace (and "crash into") their own path after traveling
+// ~TEAM_SPACING forward -- a geometric side-effect of staying side-by-
+// side, not a real crash. Older self-trail segments outside that window
+// remain real hazards (the classic "ran into your own trail" loss
+// condition still applies).
+//
+// A trail segment counts as a hazard on a level if EITHER endpoint was
+// recorded at that level -- this also makes ramp "vertical connector"
+// waypoint pairs (see checkRampsForTeam) hazards on both levels they join,
+// with no extra logic needed.
+function hitsAt(px, pz, level, self){
+  if(obstacleAt(px, pz, level)) return true;
+  const selfGrace = !!(self && self.team && self.team.turnGraceTimer > 0);
+  for(const other of cycles){
+    const isSelf = other === self;
+    const sameSquad = !isSelf && self && other.team === self.team;
+    if(sameSquad) continue;
+    if(isSelf && selfGrace) continue;
+    const trail = other.trail;
+    const segCount = trail.length - 1;
+    const skipLast = isSelf ? 1 : 0;
+    for(let i=0; i<segCount-skipLast; i++){
+      const a = trail[i], b = trail[i+1];
+      if(a.level !== level && b.level !== level) continue;
+      if(distPointToSegment(px,pz, a.x,a.z, b.x,b.z) < COLLISION_RADIUS) return true;
+    }
+    if(!isSelf && other.alive && other.level === level){
+      const last = trail[trail.length-1];
+      if(distPointToSegment(px,pz, last.x,last.z, other.x,other.z) < COLLISION_RADIUS) return true;
+    }
+  }
+  return false;
+}
+function checkCollision(cycle){
+  return hitsAt(cycle.x, cycle.z, cycle.level, cycle);
+}
+
+// ---------- AI (one shared "brain" per squad) ----------
+// A turn is only "safe" if it's safe for EVERY member's lookahead
+// position, not just a single leader -- otherwise the AI could steer the
+// formation's outer bikes into a hazard the middle one would have
+// cleared. Self-preserving, not perfect: some AI crashes are fine and
+// expected, same as the reference material.
+function teamSafeAt(team, testHeading, aheadDist){
+  const dir = headingVec(testHeading);
+  for(const m of team.members){
+    if(!m.alive) continue;
+    if(hitsAt(m.x+dir.x*aheadDist, m.z+dir.z*aheadDist, m.level, m)) return false;
+  }
+  return true;
+}
+function aiDecideTeam(team, dt){
+  if(team.dead) return;
+  team.decisionTimer -= dt;
+  if(team.decisionTimer > 0) return;
+  team.decisionTimer = 0.15 + Math.random()*0.1;
+
+  const aheadDist = currentSpeed*AI_LOOKAHEAD_TIME + 1.5;
+  const danger = !teamSafeAt(team, team.heading, aheadDist);
+  const leftH = normalizeHeading(team.heading - Math.PI/2);
+  const rightH = normalizeHeading(team.heading + Math.PI/2);
+  const leftSafe = teamSafeAt(team, leftH, aheadDist);
+  const rightSafe = teamSafeAt(team, rightH, aheadDist);
+
+  if(danger){
+    if(leftSafe && rightSafe) turnTeam(team, Math.random()<0.5 ? 'left' : 'right');
+    else if(leftSafe) turnTeam(team, 'left');
+    else if(rightSafe) turnTeam(team, 'right');
+  } else if(Math.random() < AI_RANDOM_TURN_CHANCE){
+    const dir = Math.random()<0.5 ? 'left' : 'right';
+    if(dir==='left' ? leftSafe : rightSafe) turnTeam(team, dir);
+  }
+}
+// Ramps trigger off the formation's MIDDLE member's position against a
+// generously wide radius (comfortably covering the full ~2*TEAM_SPACING
+// formation width), so the whole squad transitions together in one
+// instant snap -- consistent with every other "sudden, not eased"
+// transition in this game.
+function checkRampsForTeam(team){
+  if(team.dead || team.rampCooldown > 0) return;
+  const lead = team.members[1];
+  const ci = Math.floor(lead.x/RAMP_CELL), cj = Math.floor(lead.z/RAMP_CELL);
+  for(let di=-1; di<=1; di++){
+    for(let dj=-1; dj<=1; dj++){
+      const r = rampCellAt(ci+di, cj+dj);
+      if(!r) continue;
+      if(r.a !== team.level && r.b !== team.level) continue;
+      if(Math.hypot(lead.x-r.x, lead.z-r.z) >= r.r) continue;
+      const newLevel = team.level === r.a ? r.b : r.a;
+      for(const m of team.members){
+        if(!m.alive) continue;
+        m.trail.push({x:m.x, z:m.z, level:m.level});
+        m.level = newLevel;
+        m.trail.push({x:m.x, z:m.z, level:newLevel});
+      }
+      team.level = newLevel;
+      team.rampCooldown = 1.2;
+      if(team.key==='player') sfxRamp();
+      return;
+    }
+  }
+}
+
+// ---------- KILLCAM ----------
+// When the player's squad is confirmed dead, cut to a tight close-up on
+// whichever specific bike actually crashed (not necessarily the one you
+// were steering -- a wingman dying also ends the round) and scatter a
+// brief burst of glowing fragments from the crash point before cutting
+// to the DEREZZED screen. Mirrors the intro's "hard cut, no easing"
+// camera-switch approach -- update() freezes normal simulation for the
+// duration, same as it already does during 'intro'.
+const KILLCAM_DURATION = 1.6;
+function spawnCrashParticles(x, y, z, color){
+  particles = [];
+  for(let i=0;i<22;i++){
+    const ang = Math.random()*Math.PI*2;
+    const spd = 2 + Math.random()*5;
+    particles.push({
+      x, y, z,
+      vx: Math.cos(ang)*spd, vz: Math.sin(ang)*spd, vy: 2+Math.random()*4,
+      life: 0.7+Math.random()*0.6, age: 0, color
+    });
+  }
+}
+function triggerKillcam(crashedMember){
+  state = 'killcam';
+  killcamTimer = 0;
+  killcamFocus = { x: crashedMember.x, z: crashedMember.z, heading: crashedMember.heading, level: crashedMember.level };
+  spawnCrashParticles(crashedMember.x, WALL_HEIGHT*0.5, crashedMember.z, crashedMember.style.edge);
+  sfxCrash();
+}
+function drawParticles(){
+  for(const p of particles){
+    const proj = project(p.x, p.y, p.z);
+    if(!proj) continue;
+    const alpha = clamp(1 - p.age/p.life, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 10;
+    ctx.lineWidth = 2;
+    const tailX = proj.x - p.vx*proj.scale*0.02;
+    const tailY = proj.y + p.vy*proj.scale*0.02;
+    ctx.beginPath(); ctx.moveTo(proj.x,proj.y); ctx.lineTo(tailX,tailY); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---------- TRAIL WALL + CYCLE RENDERING ----------
+// Walls read as glowing wireframe ribbons -- a dim fill, a bright glowing
+// top edge PLUS a matching bright bottom/ground edge, and thin vertical
+// girder struts at regular intervals along their length.
+function drawWallSegment(x1,z1, x2,z2, style){
+  const g1 = project(x1,0,z1), g2 = project(x2,0,z2);
+  const t1 = project(x1,WALL_HEIGHT,z1), t2 = project(x2,WALL_HEIGHT,z2);
+  if(!g1 || !g2 || !t1 || !t2) return;
+  ctx.beginPath();
+  ctx.moveTo(g1.x,g1.y); ctx.lineTo(g2.x,g2.y); ctx.lineTo(t2.x,t2.y); ctx.lineTo(t1.x,t1.y);
+  ctx.closePath();
+  ctx.fillStyle = style.fill;
+  ctx.fill();
+
+  ctx.strokeStyle = style.edge;
+  ctx.shadowColor = style.edge;
+  ctx.shadowBlur = 13;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(t1.x,t1.y); ctx.lineTo(t2.x,t2.y); ctx.stroke();
+  ctx.lineWidth = 1.5;
+  ctx.shadowBlur = 6;
+  ctx.beginPath(); ctx.moveTo(g1.x,g1.y); ctx.lineTo(g2.x,g2.y); ctx.stroke();
+
+  const segLen = Math.hypot(x2-x1, z2-z1);
+  const strutCount = Math.max(0, Math.floor(segLen/2));
+  ctx.lineWidth = 1;
+  ctx.shadowBlur = 3;
+  for(let i=1; i<strutCount; i++){
+    const t = i/strutCount;
+    const sx = x1+(x2-x1)*t, sz = z1+(z2-z1)*t;
+    const sg = project(sx,0,sz), st = project(sx,WALL_HEIGHT,sz);
+    if(!sg || !st) continue;
+    ctx.beginPath(); ctx.moveTo(sg.x,sg.y); ctx.lineTo(st.x,st.y); ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
+}
+function drawTrailWall(cycle){
+  const y0 = levelY(cycle.level);
+  const pts = cycle.alive ? cycle.trail.concat([{x:cycle.x, z:cycle.z, level:cycle.level}]) : cycle.trail;
+  for(let i=0; i<pts.length-1; i++){
+    if(pts[i].level !== cycle.level && pts[i+1].level !== cycle.level) continue;
+    drawWallSegment(pts[i].x, pts[i].z, pts[i+1].x, pts[i+1].z, cycle.style);
+  }
+}
+// A Tesla-Optimus-esque wireframe rider (rounded head, blocky torso/
+// limbs, bright glowing joint nodes) crouched over the bike's handlebars,
+// drawn in the SAME rotated/translated local frame as the bike body
+// below -- x runs toward the nose, y is local "up/down" across the hump.
+// Mostly bright neutral white linework (the robot/suit look) with the
+// cycle's own color as the glow accent.
+function drawRiderFigure(size, edgeColor){
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#eafeff';
+  ctx.shadowColor = edgeColor;
+  ctx.shadowBlur = 12;
+  ctx.lineWidth = Math.max(0.9, size*0.045);
+  ctx.beginPath();
+  ctx.arc(size*0.15, -size*0.68, size*0.11, 0, Math.PI*2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(size*0.13, -size*0.58); ctx.lineTo(-size*0.08, -size*0.35);
+  ctx.moveTo(size*0.12, -size*0.55); ctx.lineTo(size*0.55, -size*0.22);
+  ctx.moveTo(-size*0.08, -size*0.35); ctx.lineTo(-size*0.4, -size*0.08);
+  ctx.stroke();
+  ctx.fillStyle = edgeColor;
+  ctx.shadowBlur = 10;
+  [[size*0.13,-size*0.58],[size*0.55,-size*0.22],[-size*0.08,-size*0.35],[-size*0.4,-size*0.08]].forEach(([jx,jy])=>{
+    ctx.beginPath(); ctx.arc(jx, jy, Math.max(0.8, size*0.045), 0, Math.PI*2); ctx.fill();
+  });
+  ctx.restore();
+}
+// rev3 detail pass: wheel ellipses (with spoke lines) plus bright glowing
+// nose/tail light dots, layered on rev2's body silhouette -- called from
+// inside drawCycleMarker's already-translated/rotated local frame.
+function drawWheelLocal(cx, cy, r, color){
+  ctx.strokeStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, r, r*0.85, 0, 0, Math.PI*2);
+  ctx.stroke();
+  for(let a=0; a<Math.PI; a+=Math.PI/3){
+    ctx.beginPath();
+    ctx.moveTo(cx-Math.cos(a)*r, cy-Math.sin(a)*r*0.85);
+    ctx.lineTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r*0.85);
+    ctx.stroke();
+  }
+}
+// An angular wireframe light-cycle silhouette (low wedge body + canopy
+// hump, echoing the film's bike profile) -- stroked outline with a faint
+// glass-like fill and interior strut lines so it reads as vector
+// linework, not a solid sprite. This flat, rotated 2D billboard IS the
+// "orthogonal view" -- an orthographic side-elevation silhouette --
+// oriented toward its actual screen-space travel direction (via a second
+// projected point just ahead) so it stays correct under perspective.
+// `revealT` (0..1, default 1) and `showRider` (default true) drive the
+// startup materialize/mount sequence.
+function drawCycleMarker(cycle, revealT, showRider){
+  if(!cycle.alive) return;
+  if(revealT === undefined) revealT = 1;
+  if(showRider === undefined) showRider = true;
+  if(revealT <= 0) return;
+  const fwd = headingVec(cycle.heading);
+  const p = project(cycle.x, levelY(cycle.level)+WALL_HEIGHT*0.4, cycle.z);
+  const ahead = project(cycle.x+fwd.x*1.2, levelY(cycle.level)+WALL_HEIGHT*0.4, cycle.z+fwd.z*1.2);
+  if(!p || !ahead) return;
+  const ang = Math.atan2(ahead.y-p.y, ahead.x-p.x);
+  const size = clamp(p.scale*0.85, 4, 44);
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(ang);
+  // Materializing flicker: a shimmering, randomized alpha while the bike
+  // is still "de-rezzing" in, settling to fully solid at revealT===1.
+  ctx.globalAlpha = revealT < 1 ? clamp(revealT*(0.55+Math.random()*0.55), 0, 1) : 1;
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.strokeStyle = cycle.style.edge;
+  ctx.shadowColor = cycle.style.edge;
+  ctx.shadowBlur = 16;
+  ctx.lineWidth = Math.max(1.1, size*0.055);
+  ctx.beginPath();
+  ctx.moveTo(size*1.05, 0);
+  ctx.lineTo(size*0.55, -size*0.22);
+  ctx.lineTo(size*0.1, -size*0.58);
+  ctx.lineTo(-size*0.55, -size*0.4);
+  ctx.lineTo(-size*0.95, -size*0.12);
+  ctx.lineTo(-size*0.95, size*0.14);
+  ctx.lineTo(-size*0.45, size*0.3);
+  ctx.lineTo(size*0.2, size*0.26);
+  ctx.lineTo(size*0.6, size*0.16);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.shadowBlur = 8;
+  ctx.lineWidth = Math.max(0.8, size*0.035);
+  ctx.beginPath();
+  ctx.moveTo(size*0.1, -size*0.58); ctx.lineTo(-size*0.2, size*0.05);
+  ctx.moveTo(-size*0.55, -size*0.4); ctx.lineTo(-size*0.6, size*0.2);
+  ctx.stroke();
+  ctx.lineWidth = Math.max(0.8, size*0.03);
+  ctx.shadowBlur = 6;
+  drawWheelLocal(-size*0.68, size*0.24, size*0.22, cycle.style.edge);
+  drawWheelLocal(size*0.72, size*0.2, size*0.17, cycle.style.edge);
+  ctx.shadowBlur = 14;
+  ctx.fillStyle = '#eafeff';
+  ctx.beginPath(); ctx.arc(size*1.05, 0, Math.max(1, size*0.05), 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = cycle.style.edge;
+  ctx.beginPath(); ctx.arc(-size*0.95, size*0.02, Math.max(1, size*0.045), 0, Math.PI*2); ctx.fill();
+  if(showRider) drawRiderFigure(size, cycle.style.edge);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// ---------- CONSOLE HUD (score + level + north-up minimap) ----------
+function drawMinimap(){
+  const size = Math.min(CONSOLE_H*0.86, 92);
+  const r = size/2;
+  const cx = W - r - 14, cy = CONSOLE_Y + CONSOLE_H/2;
+  const MINIMAP_RANGE = 34;
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.strokeStyle = 'rgba(0,255,255,0.4)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.clip();
+  const scale = r / MINIMAP_RANGE;
+  for(const c of cycles){
+    if(c.level !== player.level) continue;
+    const pts = c.alive ? c.trail.concat([{x:c.x, z:c.z}]) : c.trail;
+    if(pts.length < 2) continue;
+    ctx.strokeStyle = c.style.edge;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    pts.forEach((pt,i)=>{
+      const mx = cx + (pt.x-player.x)*scale, my = cy - (pt.z-player.z)*scale; // north-up, centered on player
+      if(i===0) ctx.moveTo(mx,my); else ctx.lineTo(mx,my);
+    });
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(cx,cy,2,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  ctx.restore();
+}
+function drawConsole(){
+  ctx.save();
+  ctx.fillStyle = '#04080a';
+  ctx.fillRect(0, CONSOLE_Y, W, CONSOLE_H);
+  ctx.strokeStyle = 'rgba(0,255,255,0.4)';
+  ctx.beginPath(); ctx.moveTo(0,CONSOLE_Y+0.5); ctx.lineTo(W,CONSOLE_Y+0.5); ctx.stroke();
+  ctx.fillStyle = '#7ff9ff';
+  ctx.font = '13px "Courier New", monospace';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('SCORE ' + String(score).padStart(5,'0'), 12, CONSOLE_Y + CONSOLE_H*0.28);
+  ctx.font = '11px "Courier New", monospace';
+  ctx.fillStyle = '#5c9aa3';
+  const levelLabel = ['LOWER','MID','UPPER'][player.level];
+  ctx.fillText(state==='play' ? 'SPEED ' + Math.round(currentSpeed) + '  LEVEL ' + levelLabel : 'STANDBY', 12, CONSOLE_Y + CONSOLE_H*0.62);
+  drawMinimap();
+  ctx.restore();
+}
+
+// ---------- AUDIO ----------
+// Same beep()-based blip pattern as space-ship, trimmed to what Tron needs.
+let audioCtx;
+function ensureAudio(){
+  if(!audioCtx){ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); }
+  if(audioCtx.state === 'suspended'){ audioCtx.resume(); }
+}
+function beep(freq, dur, type, vol, delay){
+  if(!audioCtx) return;
+  type = type||'square'; vol = vol===undefined?0.05:vol; delay = delay||0;
+  const startAt = audioCtx.currentTime + delay;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.value = freq;
+  g.gain.value = vol;
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(startAt);
+  g.gain.exponentialRampToValueAtTime(0.0001, startAt + dur);
+  o.stop(startAt + dur);
+}
+let noiseBufferCache = null;
+function getNoiseBuffer(){
+  if(noiseBufferCache) return noiseBufferCache;
+  const dur = 0.4;
+  const n = Math.floor(audioCtx.sampleRate * dur);
+  const buffer = audioCtx.createBuffer(1, n, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for(let i=0;i<n;i++){ data[i] = (Math.random()*2-1) * Math.pow(1 - i/n, 2); }
+  noiseBufferCache = buffer;
+  return noiseBufferCache;
+}
+function crunch(dur, vol, filterFreq){
+  if(!audioCtx) return;
+  const src = audioCtx.createBufferSource();
+  src.buffer = getNoiseBuffer();
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = filterFreq;
+  const g = audioCtx.createGain();
+  g.gain.value = vol;
+  src.connect(filter); filter.connect(g); g.connect(audioCtx.destination);
+  src.start();
+  src.stop(audioCtx.currentTime + dur);
+}
+function sfxSelect(){ beep(660, 0.04, 'sine', 0.06); }
+function sfxTurn(){ beep(880, 0.03, 'square', 0.045); }
+function sfxRamp(){ beep(520, 0.05, 'square', 0.05, 0); beep(780, 0.06, 'square', 0.05, 0.05); }
+function sfxStart(){
+  beep(220, 0.08, 'square', 0.05, 0);
+  beep(440, 0.08, 'square', 0.05, 0.08);
+  beep(660, 0.12, 'square', 0.05, 0.16);
+}
+function sfxCrash(){ crunch(0.3, 0.28, 700); beep(140, 0.2, 'sawtooth', 0.08, 0.05); }
+function sfxGameOver(){ [300,240,180,120].forEach((f,i)=> beep(f, 0.22, 'sawtooth', 0.08, i*0.15)); }
+
+// ---------- STATE / SCREENS ----------
+let state = 'title'; // title | nameentry | intro | play | killcam | gameover
+let inPortal = false, portalHandle = null, sessionStartTime = 0;
+window.addEventListener('message', (e)=>{
+  if(!e.data || e.data.type !== 'portal-init') return;
+  inPortal = true;
+  portalHandle = typeof e.data.handle === 'string' ? e.data.handle : null;
+  if(state === 'title') renderTitleScreen(true);
+});
+
+const NAME_CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+let playerChars = [0,0,0];
+let activeDigitIndex = 0;
+function playerName(){ return playerChars.map(ci=>NAME_CHARSET[ci]).join(''); }
+
+// Same Neon-backed leaderboard API every other game in this repo already
+// uses -- `game` is just a key, no backend changes needed.
+const API_BASE = 'https://games-ochre-beta-22.vercel.app';
+function fetchJSON(url, opts){ return fetch(url, opts).then(r => r.ok ? r.json() : null).catch(()=>null); }
+
+const LEADERBOARD_KEY = 'tronLeaderboard';
+function loadLeaderboard(){
+  try{
+    const raw = localStorage.getItem(LEADERBOARD_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  }catch(e){ return []; }
+}
+function saveLeaderboard(list){
+  try{ localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(list)); }catch(e){}
+}
+function recordScore(name, finalScore){
+  const list = loadLeaderboard();
+  list.push({ name, score: finalScore, date: new Date().toISOString() });
+  list.sort((a,b)=>b.score-a.score);
+  const top10 = list.slice(0,10);
+  saveLeaderboard(top10);
+  return top10;
+}
+let leaderboard = loadLeaderboard();
+function leaderboardHTML(){
+  if(leaderboard.length===0) return '<p class="small">NO SCORES YET</p>';
+  return '<div class="lb">' + leaderboard.slice(0,10).map((e,i)=>
+    '<div class="lbrow' + (i===0?' top':'') + '"><span>' + (i+1) + '. ' + e.name + '</span><span>' +
+    String(e.score).padStart(6,'0') + '</span></div>'
+  ).join('') + '</div>';
+}
+
+function renderTitleScreen(skipRemoteRefresh){
+  const controlsHTML = ORIENT === 'desktop'
+    ? '<p>STEER: ARROW LEFT/RIGHT OR A/D, OR CLICK LEFT/RIGHT SIDE</p>'
+    : '<p>STEER: TAP LEFT OR RIGHT SIDE OF THE SCREEN</p>';
+  const handleHTML = (inPortal && portalHandle)
+    ? '<p class="small">PLAYING AS ' + portalHandle + '</p>' +
+      '<div class="btn" id="changeHandleBtn">CHANGE HANDLE</div>'
+    : '';
+  centerMsg.innerHTML =
+    '<h1>TRON</h1>' +
+    '<p class="small" style="margin-top:-8px;">LIGHT CYCLES // REV 3</p>' +
+    '<p>3-BIKE SQUADS &middot; 3 LEVELS &middot; RAMPS</p>' +
+    '<p>AVOID YOUR TRAIL AND THE ENEMY TRAILS</p>' +
+    controlsHTML +
+    handleHTML +
+    '<p class="small">' + (ORIENT==='desktop' ? 'CLICK' : 'TAP') + ' TO BEGIN</p>' +
+    '<div class="btn" id="catalogueBtn">GAMES CATALOGUE</div>' +
+    '<div class="heading">TOP SCORES</div>' +
+    leaderboardHTML();
+  centerMsg.style.display = 'block';
+  const changeHandleBtn = document.getElementById('changeHandleBtn');
+  if(changeHandleBtn){
+    changeHandleBtn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      ensureAudio();
+      state = 'nameentry';
+      renderNameEntry();
+      sfxSelect();
+    });
+  }
+  const catalogueBtn = document.getElementById('catalogueBtn');
+  if(catalogueBtn){
+    catalogueBtn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      window.top.location.href = 'https://neon-flashback.com/';
+    });
+  }
+  if(!skipRemoteRefresh && API_BASE){
+    fetchJSON(`${API_BASE}/api/leaderboard?game=tron`).then(top=>{
+      if(Array.isArray(top) && state==='title'){ leaderboard = top; renderTitleScreen(true); }
+    });
+  }
+}
+function renderNameEntry(){
+  centerMsg.innerHTML =
+    '<div class="heading">ENTER CALLSIGN</div>' +
+    '<p class="small">PICK YOUR 3-LETTER CALLSIGN</p>' +
+    '<div class="digits">' + playerChars.map((ci,i)=>
+      '<div class="digitBox' + (i===activeDigitIndex?' active':'') + '">' + NAME_CHARSET[ci] + '</div>'
+    ).join('') + '</div>' +
+    '<div class="btn" id="letterUpBtn">LETTER +</div>' +
+    '<div class="btn" id="letterDownBtn">LETTER -</div><br>' +
+    '<div class="btn" id="prevSlotBtn">&lt; SLOT</div>' +
+    '<div class="btn" id="nextSlotBtn">SLOT &gt;</div><br>' +
+    '<div class="btn" id="confirmBtn">START</div>' +
+    '<p class="small">' + (ORIENT==='desktop' ? 'ARROWS TO CHOOSE, ENTER TO START' : '') + '</p>';
+  centerMsg.style.display = 'block';
+  const bind = (id, fn) => {
+    const el = document.getElementById(id);
+    if(el) el.addEventListener('click', (e)=>{ e.stopPropagation(); fn(); });
+  };
+  bind('letterUpBtn', ()=>cycleDigit(1));
+  bind('letterDownBtn', ()=>cycleDigit(-1));
+  bind('prevSlotBtn', ()=>moveDigitSlot(-1));
+  bind('nextSlotBtn', ()=>moveDigitSlot(1));
+  bind('confirmBtn', ()=>confirmNameEntry());
+}
+function moveDigitSlot(dir){
+  activeDigitIndex = clamp(activeDigitIndex+dir, 0, playerChars.length-1);
+  sfxSelect();
+  renderNameEntry();
+}
+function cycleDigit(dir){
+  const n = NAME_CHARSET.length;
+  playerChars[activeDigitIndex] = ((playerChars[activeDigitIndex]+dir)%n+n)%n;
+  sfxSelect();
+  renderNameEntry();
+}
+function confirmNameEntry(){
+  if(inPortal){
+    portalHandle = playerName();
+    window.parent.postMessage({type:'set-handle', handle: portalHandle}, '*');
+  }
+  startGame();
+}
+function requestFullscreenTron(){
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if(req){ try{ req.call(el).catch(()=>{}); }catch(e){} }
+}
+// "DE-REZ" startup cam -- a brief close-up shot on the player's own spawn
+// point while the bike materializes in with a flicker, then the rider
+// fades in on top of it, before hard-cutting to the normal gameplay
+// chase-cam. Player/AI stay frozen (update() no-ops during 'intro').
+const INTRO_DURATION = 1.8;
+const INTRO_RIDER_AT = 0.55;
+let introTimer = 0;
+function startGame(){
+  ensureAudio();
+  resetGame();
+  state = 'intro';
+  introTimer = 0;
+  sessionStartTime = Date.now();
+  centerMsg.style.display = 'none';
+  sfxStart();
+  requestFullscreenTron();
+}
+function endRound(){
+  state = 'gameover';
+  sfxGameOver();
+  leaderboard = recordScore(playerName(), score);
+  showGameOver();
+  if(inPortal){
+    window.parent.postMessage({
+      type: 'session-log', slug: 'tron', handle: playerName(),
+      score, startedAt: sessionStartTime, endedAt: Date.now()
+    }, '*');
+  }
+}
+function showGameOver(skipRemoteRefresh){
+  centerMsg.innerHTML =
+    '<h1>DEREZZED</h1>' +
+    '<p>' + playerName() + ' — DISTANCE: ' + score + '</p>' +
+    '<div class="btn" id="newGameBtn">NEW GAME</div>' +
+    '<div class="btn" id="returnMenuBtn">GAMES CATALOGUE</div>' +
+    '<p class="small">TAP NEW GAME TO RUN AGAIN</p>' +
+    '<div class="heading">TOP SCORES</div>' +
+    leaderboardHTML();
+  centerMsg.style.display = 'block';
+  const newGameBtn = document.getElementById('newGameBtn');
+  if(newGameBtn){
+    newGameBtn.addEventListener('click', (e)=>{ e.stopPropagation(); startGame(); });
+  }
+  const returnMenuBtn = document.getElementById('returnMenuBtn');
+  if(returnMenuBtn){
+    returnMenuBtn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      window.top.location.href = 'https://neon-flashback.com/';
+    });
+  }
+  if(!skipRemoteRefresh) submitScoreRemote(playerName(), score);
+}
+function submitScoreRemote(name, finalScore){
+  if(!API_BASE) return;
+  fetchJSON(`${API_BASE}/api/score`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ game: 'tron', name, score: finalScore })
+  }).then(top=>{
+    if(Array.isArray(top) && state==='gameover'){
+      leaderboard = top;
+      showGameOver(true);
+    }
+  });
+}
+function handlePrimaryAction(){
+  if(state==='title'){
+    ensureAudio();
+    if(inPortal && portalHandle){
+      playerChars = portalHandle.split('').slice(0,3).map(ch=>{
+        const idx = NAME_CHARSET.indexOf(ch);
+        return idx>=0 ? idx : 0;
+      });
+      while(playerChars.length<3) playerChars.push(0);
+      startGame();
+      return;
+    }
+    state = 'nameentry';
+    renderNameEntry();
+    sfxSelect();
+  } else if(state==='gameover'){
+    state = 'title';
+    playerChars = [0,0,0];
+    activeDigitIndex = 0;
+    renderTitleScreen();
+  }
+}
+renderTitleScreen();
+
+// ---------- INPUT ----------
+window.addEventListener('keydown', (e)=>{
+  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Enter'].includes(e.code)) e.preventDefault();
+  if(e.repeat) return;
+  if(state==='play'){
+    if(e.code==='ArrowLeft' || e.code==='KeyA'){ turnTeam(redTeam,'left'); if(player.alive) sfxTurn(); }
+    if(e.code==='ArrowRight' || e.code==='KeyD'){ turnTeam(redTeam,'right'); if(player.alive) sfxTurn(); }
+  }
+  if(state==='nameentry'){
+    if(e.code==='ArrowUp') cycleDigit(1);
+    if(e.code==='ArrowDown') cycleDigit(-1);
+    if(e.code==='ArrowLeft') moveDigitSlot(-1);
+    if(e.code==='ArrowRight') moveDigitSlot(1);
+  }
+  if(e.code==='Enter'){
+    if(state==='title') handlePrimaryAction();
+    else if(state==='nameentry') confirmNameEntry();
+    else if(state==='gameover') handlePrimaryAction();
+  }
+});
+canvas.addEventListener('pointerdown', (e)=>{
+  ensureAudio();
+  if(state !== 'play') return;
+  const rect = canvas.getBoundingClientRect();
+  const px = (e.clientX - rect.left) * (canvas.width/rect.width);
+  if(px < VIEW_X + VIEW_W/2) turnTeam(redTeam,'left'); else turnTeam(redTeam,'right');
+  if(player.alive) sfxTurn();
+});
+canvas.addEventListener('click', (e)=>{
+  if(state==='play' || state==='nameentry') return;
+  handlePrimaryAction();
+});
+
+// ---------- LOOP ----------
+let lastTime = 0;
+function update(dt){
+  if(state === 'intro'){
+    introTimer += dt;
+    if(introTimer >= INTRO_DURATION) state = 'play';
+    return;
+  }
+  if(state === 'killcam'){
+    killcamTimer += dt;
+    for(const p of particles){
+      p.age += dt;
+      p.x += p.vx*dt; p.z += p.vz*dt; p.y += p.vy*dt;
+      p.vy -= 9*dt;
+    }
+    particles = particles.filter(p => p.age < p.life);
+    if(killcamTimer >= KILLCAM_DURATION) endRound();
+    return;
+  }
+  if(state !== 'play') return;
+  elapsed += dt;
+  currentSpeed = Math.min(SPEED_CAP, BASE_SPEED + elapsed*SPEED_RAMP);
+  if(bankTimer > 0){ bankTimer -= dt; if(bankTimer < 0) bankTimer = 0; }
+  for(const c of cycles){
+    if(!c.alive) continue;
+    c.x += Math.sin(c.heading) * currentSpeed * dt;
+    c.z += Math.cos(c.heading) * currentSpeed * dt;
+  }
+  if(player.alive) playerDistance += currentSpeed * dt;
+  score = Math.floor(playerDistance);
+  aiDecideTeam(blueTeam, dt);
+  aiDecideTeam(greenTeam, dt);
+  for(const team of teams){
+    if(team.rampCooldown > 0) team.rampCooldown -= dt;
+    if(team.turnGraceTimer > 0) team.turnGraceTimer -= dt;
+    checkRampsForTeam(team);
+  }
+  for(const c of cycles){
+    if(c.alive && checkCollision(c)) crashTeam(c.team, c);
+  }
+}
+function drawIntroCaption(){
+  ctx.save();
+  const t = clamp(introTimer/INTRO_DURATION, 0, 1);
+  const label = t < INTRO_RIDER_AT ? 'INITIALIZING LIGHT CYCLE' : 'PROGRAM ENGAGED';
+  ctx.font = '13px "Courier New", monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(180,245,255,' + (0.5+Math.random()*0.4).toFixed(2) + ')';
+  ctx.shadowColor = '#8ff2ff';
+  ctx.shadowBlur = 8;
+  ctx.fillText(label, CENTER_X, VIEW_H*0.14);
+  ctx.restore();
+}
+function render(){
+  ctx.clearRect(0,0,W,H);
+  updateCamState();
+  ctx.save();
+  // Jerky bank: a fixed-angle screen rotation for exactly BANK_DURATION
+  // after a player-team turn, then an instant snap back to level -- a
+  // step function, not an eased tween.
+  const bankAngle = (state==='play' && bankTimer>0) ? bankDir*BANK_ANGLE : 0;
+  if(bankAngle !== 0){
+    ctx.translate(CENTER_X, CENTER_Y);
+    ctx.rotate(bankAngle);
+    ctx.translate(-CENTER_X, -CENTER_Y);
+  }
+  drawSky();
+  drawGridCeiling();
+  drawHorizonBar();
+  drawGridFloor();
+  const lvl = currentFloorLevel();
+  for(const r of rampsToRender(camState.x, camState.z, VIEW_RADIUS)){
+    if(r.a===lvl || r.b===lvl) drawRampGate(r);
+  }
+  for(const o of obstaclesToRender(camState.x, camState.z, VIEW_RADIUS, lvl)) drawObstacle(o);
+  for(const c of cycles){ if(c.level === lvl) drawTrailWall(c); }
+  if(state==='intro'){
+    const t = clamp(introTimer/INTRO_DURATION, 0, 1);
+    drawCycleMarker(player, t, introTimer >= INTRO_DURATION*INTRO_RIDER_AT);
+    drawIntroCaption();
+  } else {
+    for(const c of cycles){ if(c.level === lvl) drawCycleMarker(c, 1, true); }
+    if(state==='killcam') drawParticles();
+  }
+  ctx.restore();
+  drawConsole();
+}
+function loop(now){
+  if(!lastTime) lastTime = now;
+  let dt = (now-lastTime)/1000;
+  if(dt > 0.05) dt = 0.05;
+  lastTime = now;
+  try{
+    update(dt);
+    render();
+  }catch(err){
+    console.error('Game loop error:', err);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
