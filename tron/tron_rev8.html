@@ -1,0 +1,2035 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tron">
+<link rel="manifest" href="data:application/manifest+json,{%22name%22:%22Tron%22,%22short_name%22:%22Tron%22,%22display%22:%22fullscreen%22,%22start_url%22:%22.%22,%22background_color%22:%22%23000000%22,%22theme_color%22:%22%23000000%22}">
+<title>TRON // LIGHT CYCLES</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%;
+    background:#000;
+    overflow:hidden;
+    font-family:'Courier New', monospace;
+  }
+  #wrap {
+    position:fixed;
+    top:0; left:0;
+    display:flex; align-items:center; justify-content:center;
+    background:radial-gradient(ellipse at center, #030608 0%, #000000 100%);
+  }
+  canvas {
+    background:#000;
+    cursor:crosshair;
+    display:block;
+    touch-action:none;
+    -webkit-user-select:none;
+    user-select:none;
+  }
+  /* CRT scanline overlay -- same technique as the other games in this repo */
+  #wrap::after {
+    content:'';
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    background:repeating-linear-gradient(
+      to bottom,
+      rgba(0,0,0,0) 0px,
+      rgba(0,0,0,0) 1px,
+      rgba(0,0,0,0.18) 2px,
+      rgba(0,0,0,0.18) 3px
+    );
+    mix-blend-mode:multiply;
+  }
+  #centerMsg {
+    position:absolute;
+    top:34%; left:50%;
+    transform:translate(-50%,-50%);
+    text-align:center;
+    color:#7ff9ff;
+    text-shadow:0 0 12px #0ff, 0 0 24px rgba(0,255,255,0.6);
+    pointer-events:none;
+    user-select:none;
+    background:rgba(0,8,10,0.72);
+    border:1px solid rgba(0,255,255,0.25);
+    padding:20px 26px;
+    border-radius:4px;
+    max-width:340px;
+  }
+  #centerMsg h1 {
+    font-size:34px;
+    letter-spacing:8px;
+    margin-bottom:10px;
+    color:#fff;
+    animation: flicker 2.2s infinite;
+  }
+  #centerMsg p {
+    font-size:12.5px;
+    letter-spacing:1px;
+    color:#a8f6ff;
+    text-shadow:0 0 6px rgba(0,255,255,0.6);
+    margin-top:5px;
+  }
+  #centerMsg .small {
+    font-size:12px;
+    color:#5c9aa3;
+    margin-top:18px;
+  }
+  #centerMsg .heading {
+    font-size:22px;
+    letter-spacing:5px;
+    margin-top:20px;
+    margin-bottom:8px;
+    color:#fff;
+  }
+  #centerMsg .btn {
+    display:inline-block;
+    margin-top:16px;
+    padding:10px 26px;
+    border:2px solid rgba(0,255,255,0.6);
+    border-radius:4px;
+    font-size:13px;
+    letter-spacing:3px;
+    box-shadow:0 0 10px rgba(0,255,255,0.15);
+    pointer-events:auto;
+    cursor:pointer;
+  }
+  #centerMsg .lb {
+    display:inline-block;
+    text-align:left;
+    min-width:260px;
+    margin-top:4px;
+  }
+  #centerMsg .lbrow {
+    display:flex;
+    justify-content:space-between;
+    font-size:11px;
+    padding:2px 0;
+    color:#7fd0d9;
+  }
+  #centerMsg .lbrow.top { color:#fff; text-shadow:0 0 6px rgba(0,255,255,0.8); }
+  #centerMsg .digits {
+    display:flex;
+    justify-content:center;
+    gap:12px;
+    margin:16px 0;
+  }
+  #centerMsg .digitBox {
+    width:46px; height:60px;
+    border:2px solid rgba(0,255,255,0.45);
+    border-radius:6px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:28px; font-weight:bold;
+    color:#fff;
+  }
+  #centerMsg .digitBox.active {
+    border-color:#0ff;
+    box-shadow:0 0 14px rgba(0,255,255,0.7);
+  }
+  @keyframes flicker {
+    0%, 19%, 21%, 23%, 54%, 56%, 100% { opacity:1; }
+    20%, 22%, 55% { opacity:0.6; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="390" height="844"></canvas>
+  <div id="centerMsg"></div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const centerMsg = document.getElementById('centerMsg');
+const wrap = document.getElementById('wrap');
+
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+
+// ---------- LAYOUT ----------
+// Same device-capability-driven ORIENT system as space-ship (rev26+):
+// pointer/hover media features tell mouse+keyboard devices apart from
+// touch-primary ones (phones AND tablets, even landscape) far more
+// reliably than screen size ever could. Unlike space-ship's console
+// (which needs real estate for a joystick/dials), Tron's only touch
+// controls are two full-height tap zones over the viewport itself, so
+// there's no need for space-ship's landscape/desktop side-pane split --
+// a single bottom console strip (score + minimap) works in every
+// orientation, and it stays as slim as possible since the whole point
+// of this genre is seeing the terrain.
+let W, H, VIEW_H, VIEW_W, VIEW_X, CONSOLE_Y, CONSOLE_H, CENTER_X, CENTER_Y, ORIENT;
+
+function isDesktopInput(){
+  return window.matchMedia('(pointer: fine)').matches &&
+         window.matchMedia('(hover: hover)').matches;
+}
+function getViewportSize(){
+  if(window.visualViewport){
+    return { w: window.visualViewport.width, h: window.visualViewport.height };
+  }
+  return { w: window.innerWidth, h: window.innerHeight };
+}
+function resizeCanvas(){
+  const vp = getViewportSize();
+  W = Math.round(vp.w);
+  H = Math.round(vp.h);
+  canvas.width = W; canvas.height = H;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  wrap.style.width = W + 'px';
+  wrap.style.height = H + 'px';
+  ORIENT = isDesktopInput() ? 'desktop' : (W > H ? 'landscape' : 'portrait');
+  VIEW_X = 0;
+  VIEW_W = W;
+  // Landscape/desktop get a thinner console (more width than height to
+  // spare, and no joystick/dials competing for it) than portrait's.
+  const consoleFrac = ORIENT === 'portrait' ? 0.16 : 0.12;
+  VIEW_H = Math.round(H * (1 - consoleFrac));
+  CONSOLE_Y = VIEW_H;
+  CONSOLE_H = H - VIEW_H;
+  CENTER_X = W / 2;
+  // Horizon sits in the upper third of the viewport -- chase-cam looks
+  // mostly at the ground/track ahead, with a slim band of "sky" above.
+  CENTER_Y = VIEW_H * 0.32;
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('orientationchange', resizeCanvas);
+if(window.visualViewport){
+  window.visualViewport.addEventListener('resize', resizeCanvas);
+}
+
+// ---------- CAMERA / PROJECTION ----------
+// World space: x = left/right, z = forward/back, y = height (0 = ground
+// level of the MID grid layer -- see LEVEL_HEIGHTS below). Heading is a
+// compass-style angle: 0 = facing +z, 90deg = facing +x, etc. (direction
+// vector = (sin(heading), cos(heading))) -- always one of the 4 cardinal
+// values, since squads only ever travel in straight lines and turn in
+// instant right angles.
+const FOV_SCALE = 220;
+const NEAR = 1.2;
+// Grid-cell squareness is inherently distance-dependent for a pitched
+// ground-plane camera (perspective foreshortens depth faster than width
+// the farther out you look -- true of any tiled floor shot at an angle,
+// not a bug) -- there's no single height/pitch pair that makes cells
+// square at every distance simultaneously. What matters is the
+// near-field region right around the bike, the large prominent cells at
+// the bottom of the screen the eye actually judges "square" against.
+// Solved algebraically (see project()'s math) for a ~1:1 ratio right
+// there: rev5's 3.8/0.22 measured ~16% taller than wide near the bike,
+// rev6's 5.4/0.12 overshot to ~13% wider. This rev8 value lands ratio
+// 1.00 at that same near-field reference point.
+const CAM_HEIGHT_PLAY = 6.2;
+const CAM_FOLLOW_PLAY = 6.5;
+const PITCH_PLAY = 0.12; // fixed downward tilt, radians -- see project()
+// Startup "materializing" close-up shot -- unchanged tight framing from rev2.
+const CAM_HEIGHT_INTRO = 1.5;
+const CAM_FOLLOW_INTRO = 2.4;
+
+// rev6: a small set of alternate gameplay camera angles, cut to
+// periodically for cinematic variety -- "sometimes from behind, close
+// side-on near the front, above-right, above-left." Each is expressed
+// as an OFFSET from the player's own position/heading (follow = distance
+// behind along -heading, lateral = distance to the side, yawOffset =
+// added to the player's heading to get the camera's look direction) so
+// switching shots is just re-targeting the same offset math the old
+// fixed "behind" camera always used -- see camOffset/stepCamOffset.
+// turnSwingRight/Left are triggered reactively from turnCycle() when the
+// player turns (not from the periodic picker) -- "when turning right
+// swing the camera to the right side 45 degree view, ditto to the left."
+// Still just an offset like every other shot, so it gets the exact same
+// fast smooth blend in and, a couple seconds later, back out.
+const CAM_SHOTS = {
+  behind:         { follow: CAM_FOLLOW_PLAY, lateral: 0,   height: CAM_HEIGHT_PLAY, yawOffset: 0,            pitch: PITCH_PLAY },
+  sideClose:      { follow: -1.2,            lateral: 4.5, height: 2.3,             yawOffset: Math.PI/2,    pitch: 0.05 },
+  aboveRight:     { follow: 4.5,             lateral: 5.5, height: 9.5,             yawOffset: -Math.PI/3.2, pitch: 0.55 },
+  aboveLeft:      { follow: 4.5,             lateral: -5.5,height: 9.5,             yawOffset: Math.PI/3.2,  pitch: 0.55 },
+  turnSwingRight: { follow: 5.5,             lateral: 3.2, height: 4.3,             yawOffset: -Math.PI/4,   pitch: 0.18 },
+  turnSwingLeft:  { follow: 5.5,             lateral: -3.2,height: 4.3,             yawOffset: Math.PI/4,    pitch: 0.18 }
+};
+let currentShot = 'behind';
+let shotSideSign = 1; // sideClose only -- randomized left/right each time it's picked
+let shotTimer = 3;
+const SHOT_MIN_DURATION = 3.5, SHOT_MAX_DURATION = 6.5;
+// The camera's CURRENT (smoothly-animated) offset and the offset it's
+// chasing -- see stepCamOffset(). Starts pinned to 'behind' so a fresh
+// round never opens on a mid-lerp camera.
+let camOffset = { follow: CAM_FOLLOW_PLAY, lateral: 0, height: CAM_HEIGHT_PLAY, yaw: 0, pitch: PITCH_PLAY };
+let camOffsetTarget = { follow: CAM_FOLLOW_PLAY, lateral: 0, height: CAM_HEIGHT_PLAY, yaw: 0, pitch: PITCH_PLAY };
+function pickNextShot(){
+  const r = Math.random();
+  if(r < 0.4) return 'behind';
+  if(r < 0.6){ shotSideSign = Math.random() < 0.5 ? 1 : -1; return 'sideClose'; }
+  if(r < 0.8) return 'aboveRight';
+  return 'aboveLeft';
+}
+function updateCamOffsetTarget(){
+  const shot = CAM_SHOTS[currentShot] || CAM_SHOTS.behind;
+  const sign = currentShot === 'sideClose' ? shotSideSign : 1;
+  camOffsetTarget.follow = shot.follow;
+  camOffsetTarget.lateral = shot.lateral * sign;
+  camOffsetTarget.height = shot.height;
+  camOffsetTarget.yaw = shot.yawOffset * sign;
+  camOffsetTarget.pitch = shot.pitch;
+}
+function lerpAngle(a, b, t){
+  let d = normalizeHeading(b - a);
+  if(d > Math.PI) d -= Math.PI*2;
+  return a + d*t;
+}
+// Fast exponential ease toward whichever shot is currently targeted --
+// framerate-independent (the blend factor accounts for dt), and quick
+// (~0.3-0.4s to mostly arrive). This is what makes shot CHANGES smooth
+// and fast, as requested -- it never touches player.heading itself, so
+// the 90-degree turn snap (read directly every frame, see project()
+// below) stays exactly as instant as it's always been.
+const SHOT_LERP_RATE = 9;
+function stepCamOffset(dt){
+  const k = 1 - Math.exp(-SHOT_LERP_RATE * dt);
+  camOffset.follow += (camOffsetTarget.follow - camOffset.follow) * k;
+  camOffset.lateral += (camOffsetTarget.lateral - camOffset.lateral) * k;
+  camOffset.height += (camOffsetTarget.height - camOffset.height) * k;
+  camOffset.pitch += (camOffsetTarget.pitch - camOffset.pitch) * k;
+  camOffset.yaw = lerpAngle(camOffset.yaw, camOffsetTarget.yaw, k);
+}
+
+// rev3: three stacked ride-able grid layers. Ramps (see PROCEDURAL RAMPS
+// section) flip a whole squad's level instantly -- "escape the
+// opposition by taking a ramp to a different level."
+const LEVEL_HEIGHTS = [-9, 0, 9]; // lower / mid / upper
+const LEVEL_MID = 1;
+function levelY(levelIdx){ return LEVEL_HEIGHTS[levelIdx]; }
+// The level whose grid is the active "floor" this frame -- normally the
+// player's own level, but during the kill-cam it's whichever level the
+// crashed bike was actually on (player.x/z/level freeze at crash time,
+// but the camera cuts to the crash focus instead of the player).
+function currentFloorLevel(){
+  return (state === 'killcam' && killcamFocus) ? killcamFocus.level : player.level;
+}
+
+function normalizeHeading(h){
+  const twoPi = Math.PI*2;
+  return ((h % twoPi) + twoPi) % twoPi;
+}
+function headingVec(h){ return { x: Math.sin(h), z: Math.cos(h) }; }
+
+// The camera's LOOK DIRECTION always starts from the player's CURRENT
+// heading, read directly every frame -- no interpolation, easing, or
+// tween of any kind. When the player turns 90 degrees the whole world
+// visibly snap-rotates on that exact frame, the same hard cut the
+// light-cycle sequences use. On top of that, a smoothly-animated
+// camOffset.yaw (see above) can add an EXTRA fixed angle for the current
+// shot -- that part animates; the player's own heading contribution
+// never does. Position/height/pitch follow the same split: instant
+// player position + smoothly-blended shot offset. The jerky bank (see
+// BANK_* below) is a separate, also-instant screen-space rotation
+// layered on top in render() -- don't smooth either of those two.
+let camState = { x:0, z:0, heading:0, height:0, pitch:0 };
+function updateCamState(){
+  if(state === 'killcam' && killcamFocus){
+    const fwd = headingVec(killcamFocus.heading);
+    camState.x = killcamFocus.x - fwd.x*CAM_FOLLOW_INTRO;
+    camState.z = killcamFocus.z - fwd.z*CAM_FOLLOW_INTRO;
+    camState.heading = killcamFocus.heading;
+    camState.height = levelY(killcamFocus.level) + CAM_HEIGHT_INTRO;
+    camState.pitch = 0;
+    return;
+  }
+  if(state === 'intro'){
+    const fwd = headingVec(player.heading);
+    camState.x = player.x - fwd.x*CAM_FOLLOW_INTRO;
+    camState.z = player.z - fwd.z*CAM_FOLLOW_INTRO;
+    camState.heading = player.heading;
+    camState.height = levelY(player.level) + CAM_HEIGHT_INTRO;
+    camState.pitch = 0;
+    return;
+  }
+  const heading = player.heading;
+  const fwd = headingVec(heading);
+  const perp = headingVec(normalizeHeading(heading + Math.PI/2));
+  camState.x = player.x - fwd.x*camOffset.follow + perp.x*camOffset.lateral;
+  camState.z = player.z - fwd.z*camOffset.follow + perp.z*camOffset.lateral;
+  camState.heading = normalizeHeading(heading + camOffset.yaw);
+  camState.height = levelY(player.level) + camOffset.height;
+  camState.pitch = camOffset.pitch;
+}
+
+// Projects a world-space point to screen space. Returns null if the
+// point is behind (or too close to) the camera -- callers must handle
+// that (skip, or clip the containing line/segment against NEAR first).
+// camState.x/z/height/heading/pitch are always the camera's fully-
+// resolved final position/orientation by this point (see
+// updateCamState) -- adds a downward PITCH on top of the yaw rotation,
+// one extra rotation step in the (height, forward-distance) plane.
+function project(wx, wy, wz){
+  const dx = wx - camState.x, dy = wy - camState.height, dz = wz - camState.z;
+  const cs = Math.cos(camState.heading), sn = Math.sin(camState.heading);
+  const yawZ = dx*sn + dz*cs;
+  const yawX = dx*cs - dz*sn;
+  const pitch = camState.pitch;
+  const pc = Math.cos(pitch), ps = Math.sin(pitch);
+  const camSpaceZ = yawZ*pc - dy*ps;
+  const camSpaceY = yawZ*ps + dy*pc;
+  if(camSpaceZ <= NEAR) return null;
+  const scale = FOV_SCALE / camSpaceZ;
+  return {
+    x: CENTER_X + yawX * scale,
+    y: CENTER_Y - camSpaceY * scale,
+    scale
+  };
+}
+// Projects both ends of a world-space segment, clipping at the near
+// plane if one end is behind the camera and the other isn't -- avoids
+// the grid "popping"/distorting right at the camera as lines cross the
+// clip plane.
+function projectSegment(x1,y1,z1, x2,y2,z2){
+  const cs = Math.cos(camState.heading), sn = Math.sin(camState.heading);
+  const pitch = camState.pitch;
+  const pc = Math.cos(pitch), ps = Math.sin(pitch);
+  function toCamSpace(wx,wy,wz){
+    const dx = wx-camState.x, dy = wy-camState.height, dz = wz-camState.z;
+    const yawZ = dx*sn+dz*cs, yawX = dx*cs-dz*sn;
+    return { z: yawZ*pc - dy*ps, x: yawX, y: yawZ*ps + dy*pc };
+  }
+  let a = toCamSpace(x1,y1,z1), b = toCamSpace(x2,y2,z2);
+  if(a.z <= NEAR && b.z <= NEAR) return null;
+  if(a.z <= NEAR || b.z <= NEAR){
+    // Clip the behind-camera end to the near plane by linear
+    // interpolation along the segment in camera space.
+    const behind = a.z <= NEAR ? a : b;
+    const front = a.z <= NEAR ? b : a;
+    const t = (NEAR - front.z) / (behind.z - front.z);
+    const clipped = {
+      z: NEAR,
+      x: front.x + (behind.x-front.x)*t,
+      y: front.y + (behind.y-front.y)*t
+    };
+    if(a.z <= NEAR) a = clipped; else b = clipped;
+  }
+  const sa = FOV_SCALE/a.z, sb = FOV_SCALE/b.z;
+  return {
+    x1: CENTER_X + a.x*sa, y1: CENTER_Y - a.y*sa,
+    x2: CENTER_X + b.x*sb, y2: CENTER_Y - b.y*sb
+  };
+}
+
+// ---------- WIREFRAME GRID -- floor + mirrored ceiling, infinite streaming ----------
+// rev3: the grid is no longer world-anchored at a fixed extent (rev2) --
+// each frame it's rebuilt from whichever GRID_SPACING-aligned lines fall
+// within VIEW_RADIUS of the camera's CURRENT position, so it always
+// reads as an endless plane that "spawns" fresh lines at the horizon as
+// you travel, no matter how far a run has gone.
+// rev4: spacing back up from rev3's denser squares -- the film's grid
+// reads as visibly larger, more sparse squares, not a fine mesh. The
+// major/minor dual-brightness scheme is gone too: a single, evenly-lit
+// line weight for every line, matching the film's uniform lattice
+// (rev3's brighter/dimmer alternation read more like circuit-board
+// traces than the movie's plain grid).
+const GRID_SPACING = 2;
+// rev5: pushed way out so the grid visibly reaches much closer to the
+// true horizon before the drawn lines run out -- at the old, smaller
+// radius the floor/ceiling grids stopped well short of the horizon bar,
+// leaving a visible black gap between them; a bigger radius means far
+// lines cluster in tight toward the vanishing point instead, closing it.
+const VIEW_RADIUS = 100;
+
+// Shared by the floor and its mirrored ceiling -- draws the grid lines
+// of a horizontal plane at world height `y`, centered on (refX, refZ).
+// Since the camera pitch/yaw are the same for every plane, floor and
+// ceiling naturally vanish into the same horizon point.
+function drawGridPlane(y, refX, refZ){
+  ctx.save();
+  ctx.lineCap = 'butt';
+  ctx.strokeStyle = 'rgba(110,222,255,0.42)';
+  ctx.shadowColor = '#8ff2ff';
+  ctx.shadowBlur = 5;
+  ctx.lineWidth = 1;
+  const iCenter = Math.round(refX/GRID_SPACING);
+  const jCenter = Math.round(refZ/GRID_SPACING);
+  const n = Math.round(VIEW_RADIUS/GRID_SPACING);
+  const zMin = refZ-VIEW_RADIUS, zMax = refZ+VIEW_RADIUS;
+  const xMin = refX-VIEW_RADIUS, xMax = refX+VIEW_RADIUS;
+  for(let i=iCenter-n; i<=iCenter+n; i++){
+    const x = i*GRID_SPACING;
+    const seg = projectSegment(x,y,zMin, x,y,zMax);
+    if(!seg) continue;
+    ctx.beginPath(); ctx.moveTo(seg.x1,seg.y1); ctx.lineTo(seg.x2,seg.y2); ctx.stroke();
+  }
+  for(let j=jCenter-n; j<=jCenter+n; j++){
+    const z = j*GRID_SPACING;
+    const seg = projectSegment(xMin,y,z, xMax,y,z);
+    if(!seg) continue;
+    ctx.beginPath(); ctx.moveTo(seg.x1,seg.y1); ctx.lineTo(seg.x2,seg.y2); ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+function drawGridFloor(){
+  drawGridPlane(levelY(currentFloorLevel()), camState.x, camState.z);
+}
+function drawGridCeiling(){
+  const lvl = currentFloorLevel();
+  if(lvl >= LEVEL_HEIGHTS.length-1) return; // topmost level -- open void above
+  drawGridPlane(levelY(lvl+1), camState.x, camState.z);
+}
+
+// Pure black void, like the film's bare sky. A thin glowing horizon bar
+// marks the vanishing line itself, the way the movie's stark grid/sky
+// cut reads.
+function drawSky(){
+  ctx.save();
+  ctx.fillStyle = '#000';
+  ctx.fillRect(VIEW_X, 0, VIEW_W, CENTER_Y);
+  ctx.restore();
+}
+function drawHorizonBar(){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(140,235,255,0.5)';
+  ctx.shadowColor = '#8ff2ff';
+  ctx.shadowBlur = 8;
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(VIEW_X, CENTER_Y+0.5); ctx.lineTo(VIEW_X+VIEW_W, CENTER_Y+0.5); ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+// ---------- PROCEDURAL RAMPS + OBSTACLES ----------
+// The play field is unbounded, so ramps/obstacles are generated
+// deterministically from world-cell coordinates (a cheap 2D hash) rather
+// than a fixed list -- querying "what's near this point" always gives
+// the same answer (stable landmarks), with nothing to track or garbage-
+// collect as a run goes on indefinitely.
+function hash2(i, j){
+  const h = Math.sin(i*127.1 + j*311.7) * 43758.5453;
+  return h - Math.floor(h);
+}
+const SPAWN_SAFE_RADIUS = 14; // keeps the round's starting area clear
+
+// rev5: smaller cell + higher hit probability than rev3/rev4 (ramps were
+// hard to actually come across) so they show up reliably during a run,
+// and a wider activation radius so crossing one doesn't need pixel-
+// precise alignment.
+const RAMP_CELL = 24;
+// rev8: ramps are now real sloped structures (see drawRamp) rather than
+// a flat portal marker -- each one climbs a fixed direction (one of the
+// four cardinal headings) from its base, over RAMP_RUN world units of
+// horizontal run, up to the next level's height (RAMP_RISE, matching
+// the LEVEL_HEIGHTS gap).
+const RAMP_RISE = 9;
+const RAMP_RUN = 11;
+const RAMP_WIDTH = 3.4;
+const RAMP_DIRS = [{x:0,z:1},{x:1,z:0},{x:0,z:-1},{x:-1,z:0}];
+function rampCellAt(i, j){
+  if(hash2(i,j) >= 0.5) return null;
+  const cx = i*RAMP_CELL + RAMP_CELL*0.5 + (hash2(i+1,j)-0.5)*RAMP_CELL*0.4;
+  const cz = j*RAMP_CELL + RAMP_CELL*0.5 + (hash2(i,j+1)-0.5)*RAMP_CELL*0.4;
+  const pair = hash2(i+2,j+3) < 0.5 ? [0,1] : [1,2];
+  const dir = RAMP_DIRS[Math.floor(hash2(i+9,j+9)*4) % 4];
+  return { x:cx, z:cz, a:pair[0], b:pair[1], r:3.6, dir };
+}
+function rampsToRender(refX, refZ, radius){
+  const out = [];
+  const iMin = Math.floor((refX-radius)/RAMP_CELL), iMax = Math.floor((refX+radius)/RAMP_CELL);
+  const jMin = Math.floor((refZ-radius)/RAMP_CELL), jMax = Math.floor((refZ+radius)/RAMP_CELL);
+  for(let i=iMin;i<=iMax;i++){
+    for(let j=jMin;j<=jMax;j++){
+      const r = rampCellAt(i,j);
+      if(r) out.push(r);
+    }
+  }
+  return out;
+}
+
+const OBSTACLE_CELL = 16;
+function obstacleCellAt(i, j, level){
+  if(hash2(i*3+level*97, j*3+level*53) >= 0.22) return null;
+  const ox = i*OBSTACLE_CELL + OBSTACLE_CELL*0.5 + (hash2(i+5,j+level)-0.5)*OBSTACLE_CELL*0.5;
+  const oz = j*OBSTACLE_CELL + OBSTACLE_CELL*0.5 + (hash2(i+level,j+7)-0.5)*OBSTACLE_CELL*0.5;
+  if(level === LEVEL_MID && Math.hypot(ox,oz) < SPAWN_SAFE_RADIUS) return null;
+  return { x:ox, z:oz, level, radius:1.1 };
+}
+function obstaclesToRender(refX, refZ, radius, level){
+  const out = [];
+  const iMin = Math.floor((refX-radius)/OBSTACLE_CELL), iMax = Math.floor((refX+radius)/OBSTACLE_CELL);
+  const jMin = Math.floor((refZ-radius)/OBSTACLE_CELL), jMax = Math.floor((refZ+radius)/OBSTACLE_CELL);
+  for(let i=iMin;i<=iMax;i++){
+    for(let j=jMin;j<=jMax;j++){
+      const o = obstacleCellAt(i,j,level);
+      if(o) out.push(o);
+    }
+  }
+  return out;
+}
+function obstacleAt(px, pz, level){
+  const ci = Math.floor(px/OBSTACLE_CELL), cj = Math.floor(pz/OBSTACLE_CELL);
+  for(let di=-1; di<=1; di++){
+    for(let dj=-1; dj<=1; dj++){
+      const o = obstacleCellAt(ci+di, cj+dj, level);
+      if(o && Math.hypot(px-o.x, pz-o.z) < o.radius + COLLISION_RADIUS) return true;
+    }
+  }
+  return false;
+}
+function drawObstacle(o){
+  const y0 = levelY(o.level), h = 2.4, r = o.radius;
+  const corners = [[-r,-r],[r,-r],[r,r],[-r,r]];
+  const top = corners.map(([cx,cz])=> project(o.x+cx, y0+h, o.z+cz));
+  const bot = corners.map(([cx,cz])=> project(o.x+cx, y0, o.z+cz));
+  if(top.some(p=>!p) || bot.some(p=>!p)) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,200,90,0.85)';
+  ctx.shadowColor = '#ffcf5a';
+  ctx.shadowBlur = 10;
+  ctx.lineWidth = 1.5;
+  for(let i=0;i<4;i++){
+    const j=(i+1)%4;
+    ctx.beginPath(); ctx.moveTo(bot[i].x,bot[i].y); ctx.lineTo(bot[j].x,bot[j].y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(top[i].x,top[i].y); ctx.lineTo(top[j].x,top[j].y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(bot[i].x,bot[i].y); ctx.lineTo(top[i].x,top[i].y); ctx.stroke();
+  }
+  ctx.restore();
+}
+// rev8: a genuine sloped ramp surface -- rises from the lower level's
+// floor (r.a) to the upper level's floor (r.b, always r.a+1) along a
+// fixed cardinal direction (r.dir), instead of the old flat vertical
+// "gate" marker. Because the floor AND the level-above's grid are both
+// already drawn every frame (drawGridFloor/drawGridCeiling), an
+// upward-climbing ramp visibly connects the two real planes on screen --
+// it reads as an actual incline you ride up, not a portal you touch.
+function drawRamp(r){
+  const y0 = levelY(r.a), y1 = levelY(r.b);
+  const dir = r.dir, perp = { x:-dir.z, z:dir.x };
+  const bx = r.x, bz = r.z;
+  const tx = r.x + dir.x*RAMP_RUN, tz = r.z + dir.z*RAMP_RUN;
+  const baseL = project(bx-perp.x*RAMP_WIDTH, y0, bz-perp.z*RAMP_WIDTH);
+  const baseR = project(bx+perp.x*RAMP_WIDTH, y0, bz+perp.z*RAMP_WIDTH);
+  const topL  = project(tx-perp.x*RAMP_WIDTH, y1, tz-perp.z*RAMP_WIDTH);
+  const topR  = project(tx+perp.x*RAMP_WIDTH, y1, tz+perp.z*RAMP_WIDTH);
+  // Entry/exit glow rings mark it from far away even when the incline
+  // itself is too distant/small to read yet.
+  for(const ring of [project(bx,y0,bz), project(tx,y1,tz)]){
+    if(!ring) continue;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,220,110,0.8)';
+    ctx.shadowColor = '#ffd25a';
+    ctx.shadowBlur = 18;
+    ctx.lineWidth = Math.max(1.5, ring.scale*0.05);
+    ctx.beginPath();
+    ctx.ellipse(ring.x, ring.y, Math.max(4, ring.scale*RAMP_WIDTH*0.75), Math.max(1.5, ring.scale*RAMP_WIDTH*0.26), 0, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.restore();
+  }
+  if(!baseL||!baseR||!topL||!topR) return;
+  ctx.save();
+  // Solid, faintly glowing ramp deck so it reads as a real surface, not
+  // just wireframe rails.
+  ctx.fillStyle = 'rgba(255,190,80,0.16)';
+  ctx.beginPath();
+  ctx.moveTo(baseL.x,baseL.y); ctx.lineTo(baseR.x,baseR.y);
+  ctx.lineTo(topR.x,topR.y); ctx.lineTo(topL.x,topL.y);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,215,100,0.95)';
+  ctx.shadowColor = '#ffd25a';
+  ctx.shadowBlur = 14;
+  ctx.lineWidth = 2.2;
+  ctx.beginPath();
+  ctx.moveTo(baseL.x,baseL.y); ctx.lineTo(topL.x,topL.y);
+  ctx.moveTo(baseR.x,baseR.y); ctx.lineTo(topR.x,topR.y);
+  ctx.moveTo(baseL.x,baseL.y); ctx.lineTo(baseR.x,baseR.y);
+  ctx.moveTo(topL.x,topL.y); ctx.lineTo(topR.x,topR.y);
+  ctx.stroke();
+  // Tread rungs across the deck -- reinforces "sloped surface you drive
+  // up" over just two side rails.
+  ctx.lineWidth = 1.3;
+  ctx.shadowBlur = 8;
+  ctx.strokeStyle = 'rgba(255,225,140,0.65)';
+  for(let i=1;i<=4;i++){
+    const t = i/5;
+    const cx = bx+dir.x*RAMP_RUN*t, cz = bz+dir.z*RAMP_RUN*t, cy = y0+(y1-y0)*t;
+    const l = project(cx-perp.x*RAMP_WIDTH, cy, cz-perp.z*RAMP_WIDTH);
+    const rr = project(cx+perp.x*RAMP_WIDTH, cy, cz+perp.z*RAMP_WIDTH);
+    if(!l||!rr) continue;
+    ctx.beginPath(); ctx.moveTo(l.x,l.y); ctx.lineTo(rr.x,rr.y); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ---------- CYCLES / TRAILS ----------
+// rev4: back to one bike per color (rev3's 3-bike squadrons are gone) --
+// player/aiBlue/aiGreen are individual cycles again, matching rev1/rev2's
+// shape. Each still carries its own `level` plus ramp/AI state directly.
+const WALL_HEIGHT = 2.4;
+const BASE_SPEED = 13;        // world units/sec at round start -- faster than rev1-3, per request
+const SPEED_RAMP = 0.22;      // added to speed per second survived
+const SPEED_CAP = 30;
+const COLLISION_RADIUS = 0.35;
+const BIKE_COLLISION_RADIUS = 0.9; // new: direct bike-vs-bike proximity hazard, see hitsAt
+const AI_LOOKAHEAD_TIME = 0.5;
+// Dropped sharply from rev2's 0.05 -- opponents should only rarely throw
+// in an unprompted turn, not constantly cut across.
+const AI_RANDOM_TURN_CHANCE = 0.012;
+
+// `fill`/`dark` are used ONLY by the trail walls now (still color-coded
+// per rider -- distinguishing whose trail is whose is core gameplay);
+// `edge` is also the bike's neon accent/light color -- see BIKE_BODY_*
+// below for the bike body itself, which is now shared cream across all
+// three riders.
+// rev8: fill alpha brought back down from rev4-7's ~0.92 (opaque) to a
+// genuinely semi-translucent ~0.45 -- "semi translucent, but still
+// bright" -- the bright, fully-opaque glowing edge strokes (see
+// drawWallSegment) are what carry the "still bright" half of that.
+const CYCLE_STYLES = {
+  player: { fill: 'rgba(255,70,55,0.45)', edge: '#ff4433', dark: '#7a140b' },
+  blue:   { fill: 'rgba(60,168,255,0.45)', edge: '#39aaff', dark: '#0c3a6e' },
+  green:  { fill: 'rgba(70,255,150,0.45)', edge: '#3dffa0', dark: '#0c6e3a' }
+};
+// rev6: bike BODIES are now a shared solid cream color for every rider
+// (Tron-Legacy-style light-cycle look -- a light/neutral chassis with
+// colored light accents, rather than a fully saturated team-colored
+// body) -- `cycle.style.edge` still supplies the per-rider neon glow
+// used for the accent stripe, wheel rim, and lights.
+// Brightened toward near-white -- at the bike's small on-screen size,
+// a mid-tone cream still read as "washed out red/orange" once blended
+// with the neon edge/wheel/light glow around it; a stronger light-vs-
+// glow contrast reads unambiguously as a light-colored body instead.
+const BIKE_BODY_FILL = 'rgba(247,241,222,0.97)';
+const BIKE_BODY_DARK = 'rgba(178,168,136,0.9)';
+
+function makeCycle(x, z, heading, level, styleKey, isPlayer){
+  return {
+    x, z, heading, level, isPlayer,
+    style: CYCLE_STYLES[styleKey],
+    trail: [{x, z, level}],
+    alive: true,
+    decisionTimer: Math.random()*0.3,
+    rampCooldown: 0,
+    chickenTimer: 0, // >0 while "holding course" through a head-on approach -- see aiDecide
+    deadTimer: 0,    // seconds since crashing -- see respawnEnemyNearPlayer
+    wheelSpin: 0      // radians, animates the wheel-hub accent cross -- see update()
+  };
+}
+
+let player, aiBlue, aiGreen, cycles;
+let elapsed = 0, currentSpeed = BASE_SPEED, playerDistance = 0, score = 0;
+// Jerky camera bank on every player turn -- a STEP, not a tween (see
+// render()). "Sudden ninety degree turn, but it does appear like a
+// sudden banking motion."
+let bankTimer = 0, bankDir = 0;
+const BANK_DURATION = 0.22;
+const BANK_ANGLE = 0.27;
+// Brief radial motion-streak flash layered on top of the same instant
+// turn -- purely decorative (no camera/position state involved), so it
+// doesn't violate the "no interpolation" rule; it just makes the hard
+// cut visibly read as "the world spun" rather than "a new scene
+// appeared." See drawTurnFlash().
+let turnFlashTimer = 0;
+const TURN_FLASH_DURATION = 0.16;
+// Kill-cam particle state -- declared here (ahead of resetGame(), which
+// clears `particles` on every reset) even though the functions that use
+// them live down in the KILLCAM section; `let` bindings aren't hoisted
+// the way function declarations are, so resetGame() -- called immediately
+// below -- would otherwise throw a temporal-dead-zone ReferenceError.
+let killcamTimer = 0;
+let killcamFocus = null;
+let particles = [];
+let explosions = [];
+
+function resetGame(){
+  player  = makeCycle(0, 0, 0, LEVEL_MID, 'player', true);
+  aiBlue  = makeCycle(-14, 0, 0, LEVEL_MID, 'blue', false);
+  aiGreen = makeCycle(14, 0, 0, LEVEL_MID, 'green', false);
+  cycles = [player, aiBlue, aiGreen];
+  elapsed = 0;
+  currentSpeed = BASE_SPEED;
+  playerDistance = 0;
+  score = 0;
+  bankTimer = 0; bankDir = 0;
+  turnFlashTimer = 0;
+  particles = [];
+  explosions = [];
+  currentShot = 'behind';
+  shotTimer = SHOT_MIN_DURATION + Math.random()*(SHOT_MAX_DURATION-SHOT_MIN_DURATION);
+  camOffset = { follow: CAM_FOLLOW_PLAY, lateral: 0, height: CAM_HEIGHT_PLAY, yaw: 0, pitch: PITCH_PLAY };
+  camOffsetTarget = { follow: CAM_FOLLOW_PLAY, lateral: 0, height: CAM_HEIGHT_PLAY, yaw: 0, pitch: PITCH_PLAY };
+}
+resetGame();
+
+// Turning pushes the current position as a new waypoint (closing off
+// the segment just traveled) then snaps the heading 90 degrees. Guards
+// against a near-zero-length segment from a double-tap/double-turn on
+// the same spot, which would otherwise leave a degenerate trail segment.
+function turnCycle(cycle, dir){
+  const last = cycle.trail[cycle.trail.length-1];
+  const distSinceWaypoint = Math.hypot(cycle.x-last.x, cycle.z-last.z);
+  if(distSinceWaypoint < 0.4) return;
+  cycle.trail.push({x: cycle.x, z: cycle.z, level: cycle.level});
+  cycle.heading = normalizeHeading(cycle.heading + (dir==='left' ? -Math.PI/2 : Math.PI/2));
+  if(cycle === player){
+    bankTimer = BANK_DURATION;
+    bankDir = dir==='left' ? -1 : 1;
+    turnFlashTimer = TURN_FLASH_DURATION;
+    cycle.chickenTimer = 0; // turning away cancels any head-on hold
+    // Sometimes react to the turn itself by swinging the camera out to
+    // a 45-degree view on the same side -- distinct from the periodic
+    // random shot picker, and always overrides whatever shot was active.
+    if(state === 'play' && Math.random() < 0.4){
+      currentShot = dir === 'right' ? 'turnSwingRight' : 'turnSwingLeft';
+      updateCamOffsetTarget();
+      shotTimer = 1.6 + Math.random()*0.9;
+    }
+  }
+}
+function crashCycle(cycle){
+  if(!cycle.alive) return;
+  cycle.alive = false;
+  cycle.trail.push({x: cycle.x, z: cycle.z, level: cycle.level});
+  if(cycle.isPlayer) triggerKillcam(cycle);
+}
+
+// ---------- COLLISION ----------
+function distPointToSegment(px,pz, x1,z1, x2,z2){
+  const dx = x2-x1, dz = z2-z1;
+  const lenSq = dx*dx + dz*dz;
+  if(lenSq < 1e-9) return Math.hypot(px-x1, pz-z1);
+  let t = ((px-x1)*dx + (pz-z1)*dz) / lenSq;
+  t = clamp(t, 0, 1);
+  return Math.hypot(px-(x1+dx*t), pz-(z1+dz*t));
+}
+// Tests a candidate point (at a given LEVEL) against static obstacles,
+// a direct bike-vs-bike proximity radius (new in rev4 -- what makes a
+// head-on "chicken" encounter, see aiDecide, actually end in a real
+// crash if neither rider swerves), and every cycle's trail on that same
+// level. `self` gets its own most-recent CLOSED segment skipped -- the
+// one touching the corner just turned from, which would otherwise read
+// as a false collision the instant a turn is made.
+function hitsAt(px, pz, level, self){
+  if(obstacleAt(px, pz, level)) return true;
+  for(const other of cycles){
+    const isSelf = other === self;
+    if(!isSelf && other.alive && other.level === level){
+      if(Math.hypot(px-other.x, pz-other.z) < BIKE_COLLISION_RADIUS) return true;
+    }
+    const trail = other.trail;
+    const segCount = trail.length - 1;
+    const skipLast = isSelf ? 1 : 0;
+    for(let i=0; i<segCount-skipLast; i++){
+      const a = trail[i], b = trail[i+1];
+      if(a.level !== level && b.level !== level) continue;
+      if(distPointToSegment(px,pz, a.x,a.z, b.x,b.z) < COLLISION_RADIUS) return true;
+    }
+    if(!isSelf && other.alive && other.level === level){
+      const last = trail[trail.length-1];
+      if(distPointToSegment(px,pz, last.x,last.z, other.x,other.z) < COLLISION_RADIUS) return true;
+    }
+  }
+  return false;
+}
+function checkCollision(cycle){
+  return hitsAt(cycle.x, cycle.z, cycle.level, cycle);
+}
+
+// ---------- AI ----------
+// Self-preserving, not perfect: looks ahead along its current heading
+// and, if that would run into a wall/trail/bike, turns toward whichever
+// side is clear. Otherwise it occasionally throws in an unprompted turn.
+//
+// rev4 adds two behaviors:
+// - Ramp-chasing: if the enemy is on a different level than the player,
+//   it stops normal patrolling and heads for the nearest ramp cell that
+//   leads toward the player's level (see chaseRampTowardPlayer) --
+//   "if the bike goes up, the enemy bikes should follow."
+// - "Chicken": when a head-on with the player is already developing (the
+//   player is roughly dead ahead, closing distance, headings roughly
+//   opposed), the enemy has a small chance to hold its course instead of
+//   bailing early -- its self-preservation look-ahead shrinks sharply for
+//   a couple seconds, so it commits toward the player and only bails (or
+//   doesn't) very late. Real stakes: BIKE_COLLISION_RADIUS above means if
+//   neither rider swerves in time, they actually collide.
+const CHICKEN_TRIGGER_CHANCE = 0.15;      // chance per decision tick, only when a head-on is genuinely developing
+const CHICKEN_HOLD_LOOKAHEAD_TIME = 0.16; // sharply shorter than AI_LOOKAHEAD_TIME while holding
+const CHICKEN_HOLD_DURATION = 1.4;
+
+function steerToward(cycle, desiredHeading, aheadDist){
+  if(Math.abs(normalizeHeading(desiredHeading - cycle.heading)) < 0.01) return false;
+  const diff = normalizeHeading(desiredHeading - cycle.heading);
+  const dir = diff < Math.PI ? 'right' : 'left';
+  const testH = normalizeHeading(cycle.heading + (dir==='left' ? -Math.PI/2 : Math.PI/2));
+  const testDir = headingVec(testH);
+  if(hitsAt(cycle.x+testDir.x*aheadDist, cycle.z+testDir.z*aheadDist, cycle.level, cycle)) return false;
+  turnCycle(cycle, dir);
+  return true;
+}
+// Heads for the nearest known ramp cell whose pair connects the enemy's
+// current level to the player's -- simple axis-priority steering (grid
+// headings are always cardinal, so "steer toward" just means "turn onto
+// whichever axis has the bigger remaining gap"), not full pathfinding.
+function chaseRampTowardPlayer(cycle){
+  const aheadDist = currentSpeed*AI_LOOKAHEAD_TIME + 1.5;
+  const ci = Math.floor(cycle.x/RAMP_CELL), cj = Math.floor(cycle.z/RAMP_CELL);
+  let best = null, bestDist = Infinity;
+  for(let di=-2; di<=2; di++){
+    for(let dj=-2; dj<=2; dj++){
+      const r = rampCellAt(ci+di, cj+dj);
+      if(!r) continue;
+      if(r.a !== cycle.level && r.b !== cycle.level) continue;
+      const otherLevel = cycle.level === r.a ? r.b : r.a;
+      if(otherLevel !== player.level) continue;
+      const d = Math.hypot(cycle.x-r.x, cycle.z-r.z);
+      if(d < bestDist){ bestDist = d; best = r; }
+    }
+  }
+  if(!best){
+    // No known ramp toward the player's level nearby yet -- just avoid
+    // immediate hazards on the current level while it keeps moving.
+    const fwd = headingVec(cycle.heading);
+    if(hitsAt(cycle.x+fwd.x*aheadDist, cycle.z+fwd.z*aheadDist, cycle.level, cycle)){
+      const leftH = normalizeHeading(cycle.heading - Math.PI/2);
+      if(!steerToward(cycle, leftH, aheadDist)) steerToward(cycle, normalizeHeading(cycle.heading + Math.PI/2), aheadDist);
+    }
+    return;
+  }
+  const dx = best.x-cycle.x, dz = best.z-cycle.z;
+  const desired = Math.abs(dx) > Math.abs(dz)
+    ? (dx > 0 ? Math.PI/2 : Math.PI*1.5)
+    : (dz > 0 ? 0 : Math.PI);
+  steerToward(cycle, normalizeHeading(desired), aheadDist);
+}
+function aiDecide(cycle, dt){
+  if(!cycle.alive) return;
+  cycle.decisionTimer -= dt;
+  if(cycle.decisionTimer > 0) return;
+  cycle.decisionTimer = 0.15 + Math.random()*0.1;
+
+  if(cycle.level !== player.level){
+    chaseRampTowardPlayer(cycle);
+    return;
+  }
+
+  const lookaheadTime = cycle.chickenTimer > 0 ? CHICKEN_HOLD_LOOKAHEAD_TIME : AI_LOOKAHEAD_TIME;
+  const aheadDist = currentSpeed*lookaheadTime + 1.5;
+  const fwd = headingVec(cycle.heading);
+  const danger = hitsAt(cycle.x+fwd.x*aheadDist, cycle.z+fwd.z*aheadDist, cycle.level, cycle);
+
+  const leftH = normalizeHeading(cycle.heading - Math.PI/2);
+  const rightH = normalizeHeading(cycle.heading + Math.PI/2);
+  const leftDir = headingVec(leftH), rightDir = headingVec(rightH);
+  const leftSafe = !hitsAt(cycle.x+leftDir.x*aheadDist, cycle.z+leftDir.z*aheadDist, cycle.level, cycle);
+  const rightSafe = !hitsAt(cycle.x+rightDir.x*aheadDist, cycle.z+rightDir.z*aheadDist, cycle.level, cycle);
+
+  if(danger){
+    cycle.chickenTimer = 0; // bailing cancels any chicken hold
+    if(leftSafe && rightSafe) turnCycle(cycle, Math.random()<0.5 ? 'left' : 'right');
+    else if(leftSafe) turnCycle(cycle, 'left');
+    else if(rightSafe) turnCycle(cycle, 'right');
+    return;
+  }
+
+  // rev8: "do not allow the enemy bikes to leave the radar for long,
+  // constrain them to stay in view" -- once past a soft boundary
+  // (comfortably inside the radar's actual range), actively steer back
+  // toward the player instead of continuing to wander. This takes
+  // priority over the chicken/random-wander behaviors below (but never
+  // over immediate danger, checked above), so an enemy heading out of
+  // view corrects itself well before the hard teleport safety net in
+  // respawnEnemyNearPlayer would ever need to fire.
+  const distFromPlayer = Math.hypot(cycle.x-player.x, cycle.z-player.z);
+  if(distFromPlayer > AI_SOFT_BOUNDARY){
+    const dx = player.x-cycle.x, dz = player.z-cycle.z;
+    const desired = Math.abs(dx) > Math.abs(dz)
+      ? (dx > 0 ? Math.PI/2 : Math.PI*1.5)
+      : (dz > 0 ? 0 : Math.PI);
+    if(steerToward(cycle, normalizeHeading(desired), aheadDist)) return;
+  }
+
+  if(cycle.chickenTimer <= 0){
+    const toPlayerX = player.x-cycle.x, toPlayerZ = player.z-cycle.z;
+    const dist = Math.hypot(toPlayerX, toPlayerZ);
+    if(dist > 3 && dist < 16){
+      const dot = (fwd.x*toPlayerX + fwd.z*toPlayerZ) / dist; // 1 = player dead ahead
+      const playerFwd = headingVec(player.heading);
+      const headOn = (fwd.x*playerFwd.x + fwd.z*playerFwd.z) < -0.5; // roughly opposing headings
+      if(dot > 0.85 && headOn && Math.random() < CHICKEN_TRIGGER_CHANCE){
+        cycle.chickenTimer = CHICKEN_HOLD_DURATION;
+      }
+    }
+  }
+
+  if(Math.random() < AI_RANDOM_TURN_CHANCE){
+    const dir = Math.random()<0.5 ? 'left' : 'right';
+    if(dir==='left' ? leftSafe : rightSafe) turnCycle(cycle, dir);
+  }
+}
+function checkRampForCycle(cycle){
+  if(cycle.rampCooldown > 0) return;
+  const ci = Math.floor(cycle.x/RAMP_CELL), cj = Math.floor(cycle.z/RAMP_CELL);
+  for(let di=-1; di<=1; di++){
+    for(let dj=-1; dj<=1; dj++){
+      const r = rampCellAt(ci+di, cj+dj);
+      if(!r) continue;
+      if(r.a !== cycle.level && r.b !== cycle.level) continue;
+      if(Math.hypot(cycle.x-r.x, cycle.z-r.z) >= r.r) continue;
+      const newLevel = cycle.level === r.a ? r.b : r.a;
+      cycle.trail.push({x:cycle.x, z:cycle.z, level:cycle.level});
+      cycle.level = newLevel;
+      cycle.trail.push({x:cycle.x, z:cycle.z, level:newLevel});
+      cycle.rampCooldown = 1.2;
+      if(cycle.isPlayer) sfxRamp();
+      return;
+    }
+  }
+}
+// rev8: shared with drawMinimap()'s radar radius -- the AI boundary
+// constants below are defined relative to it so "stay on the radar"
+// and "how far the radar actually shows" can never drift apart.
+const MINIMAP_RANGE = 100;
+// Recycles a wandered-off or long-dead enemy back into relevance -- a
+// fresh spawn just outside the render radius from the player, moving on
+// a random cardinal heading, trail reset to a single waypoint there.
+// Always called from a state where the bike is already invisible
+// (dead, or beyond AI_LEASH_DISTANCE), so the jump is never seen. rev8:
+// this is now a rare safety net, not the primary mechanism -- aiDecide's
+// AI_SOFT_BOUNDARY check actively steers enemies back toward the player
+// well before they'd ever reach this hard distance, per "do not allow
+// the enemy bikes to leave the radar for long, constrain them to stay
+// in view."
+const AI_SOFT_BOUNDARY = MINIMAP_RANGE * 0.55;
+const AI_LEASH_DISTANCE = MINIMAP_RANGE * 0.85;
+const AI_RESPAWN_DELAY = 3.5;   // seconds a dead enemy waits before reappearing
+function respawnEnemyNearPlayer(cycle){
+  const ang = Math.random()*Math.PI*2;
+  const dist = 30 + Math.random()*15;
+  const x = player.x + Math.cos(ang)*dist;
+  const z = player.z + Math.sin(ang)*dist;
+  const heading = [0, Math.PI/2, Math.PI, Math.PI*1.5][Math.floor(Math.random()*4)];
+  const styleKey = cycle.style.edge === CYCLE_STYLES.blue.edge ? 'blue' : 'green';
+  Object.assign(cycle, makeCycle(x, z, heading, player.level, styleKey, false));
+}
+
+// ---------- KILLCAM ----------
+// When the player is confirmed dead, cut to a tight close-up on the
+// crash position and scatter a burst of glowing fragments + an expanding
+// shockwave ring before cutting to the DEREZZED screen. Mirrors the
+// intro's "hard cut, no easing" camera-switch approach -- update()
+// freezes normal simulation for the duration, same as it already does
+// during 'intro'. rev8: lengthened to 2s and paired with a battletank-
+// style screen-space zoom-in (see render()) and a proper explosion --
+// more/brighter particles plus an expanding/fading ring -- per request.
+const KILLCAM_DURATION = 2.0;
+// rev8: eased zoom curve for the killcam, modeled on battletank's
+// zoomT/scale pattern -- ramps in fast, holds, eases back out right
+// before the cut to DEREZZED. Kept to a modest 1.5x max (the killcam
+// camera is already close via CAM_FOLLOW_INTRO/CAM_HEIGHT_INTRO, so a
+// big zoom would over-magnify) -- see render().
+const KILLCAM_ZOOM_IN = 0.35;
+const KILLCAM_ZOOM_OUT = 0.5;
+const KILLCAM_ZOOM_MAX_EXTRA = 0.5; // scale tops out at 1 + this = 1.5x
+function killcamZoomScale(t){
+  let zoomT;
+  if(t < KILLCAM_ZOOM_IN) zoomT = t/KILLCAM_ZOOM_IN;
+  else if(t > KILLCAM_DURATION-KILLCAM_ZOOM_OUT) zoomT = Math.max(0, 1-(t-(KILLCAM_DURATION-KILLCAM_ZOOM_OUT))/KILLCAM_ZOOM_OUT);
+  else zoomT = 1;
+  return 1 + zoomT*KILLCAM_ZOOM_MAX_EXTRA;
+}
+function spawnCrashParticles(x, y, z, color){
+  particles = [];
+  for(let i=0;i<44;i++){
+    const ang = Math.random()*Math.PI*2;
+    const spd = 3 + Math.random()*8;
+    particles.push({
+      x, y, z,
+      vx: Math.cos(ang)*spd, vz: Math.sin(ang)*spd, vy: 2.5+Math.random()*6,
+      life: 0.8+Math.random()*0.7, age: 0,
+      color: Math.random()<0.5 ? color : '#fff6dd' // mix in bright white-hot fragments
+    });
+  }
+  explosions = [{ x, y, z, age: 0, maxAge: 0.9 }];
+}
+function triggerKillcam(crashedCycle){
+  state = 'killcam';
+  killcamTimer = 0;
+  killcamFocus = { x: crashedCycle.x, z: crashedCycle.z, heading: crashedCycle.heading, level: crashedCycle.level };
+  spawnCrashParticles(crashedCycle.x, WALL_HEIGHT*0.5, crashedCycle.z, crashedCycle.style.edge);
+  sfxCrash();
+}
+function drawParticles(){
+  for(const p of particles){
+    const proj = project(p.x, p.y, p.z);
+    if(!proj) continue;
+    const alpha = clamp(1 - p.age/p.life, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 10;
+    ctx.lineWidth = 2;
+    const tailX = proj.x - p.vx*proj.scale*0.02;
+    const tailY = proj.y + p.vy*proj.scale*0.02;
+    ctx.beginPath(); ctx.moveTo(proj.x,proj.y); ctx.lineTo(tailX,tailY); ctx.stroke();
+    ctx.restore();
+  }
+}
+// rev8: battletank-style expanding, fading shockwave ring layered under
+// the particle burst -- what actually reads as "an explosion" rather
+// than just sparks.
+function drawExplosions(){
+  for(const ex of explosions){
+    const proj = project(ex.x, ex.y, ex.z);
+    if(!proj) continue;
+    const t = clamp(ex.age/ex.maxAge, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = (1-t)*0.9;
+    ctx.strokeStyle = '#fff6dd';
+    ctx.shadowColor = '#ffe9b0';
+    ctx.shadowBlur = 22;
+    ctx.lineWidth = Math.max(1.5, proj.scale*0.06);
+    const rad = (4 + t*30) * proj.scale * 0.08;
+    ctx.beginPath(); ctx.ellipse(proj.x, proj.y, rad, rad*0.42, 0, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---------- TRAIL WALL + CYCLE RENDERING ----------
+// rev4: solid fluorescent glow instead of rev2/rev3's "wireframe girder
+// scaffolding" look -- high-alpha fill, strong glow on both edges, no
+// vertical strut lines at all. Also fixes a level-height bug inherited
+// from rev3: the wall's base/top were always projected at absolute
+// y=0/WALL_HEIGHT regardless of which grid level the trail was actually
+// on, so a trail on the upper/lower level would render far below the
+// camera instead of on its own floor -- now takes an explicit `y0`
+// (the level's own base height) from the caller.
+//
+// rev6: fixes a real bug behind "the trail keeps going missing" -- this
+// used to project each of the 4 corners independently via plain
+// project() and bail (draw NOTHING) the instant any single corner
+// returned null (behind/too-close to the camera). Since the camera
+// trails only CAM_FOLLOW_PLAY world units behind the bike, the bike's
+// OWN newest trail segment -- from the last waypoint to its current
+// position -- routinely starts closer to the camera than NEAR: right
+// after spawning, and right after every single turn, until enough
+// distance has built back up. That's not an edge case, it's most of
+// normal play. Now reuses projectSegment() (already correctly clips a
+// segment to the near plane instead of dropping it) for both the top
+// and bottom edges of the wall quad.
+function drawWallSegment(x1,z1, x2,z2, style, y0){
+  const bottom = projectSegment(x1,y0,z1, x2,y0,z2);
+  const top = projectSegment(x1,y0+WALL_HEIGHT,z1, x2,y0+WALL_HEIGHT,z2);
+  if(!bottom || !top) return;
+  ctx.beginPath();
+  ctx.moveTo(bottom.x1,bottom.y1); ctx.lineTo(bottom.x2,bottom.y2);
+  ctx.lineTo(top.x2,top.y2); ctx.lineTo(top.x1,top.y1);
+  ctx.closePath();
+  ctx.fillStyle = style.fill;
+  ctx.shadowColor = style.edge;
+  ctx.shadowBlur = 18;
+  ctx.fill();
+
+  ctx.strokeStyle = style.edge;
+  ctx.lineWidth = 2;
+  ctx.shadowBlur = 20;
+  ctx.beginPath(); ctx.moveTo(top.x1,top.y1); ctx.lineTo(top.x2,top.y2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(bottom.x1,bottom.y1); ctx.lineTo(bottom.x2,bottom.y2); ctx.stroke();
+  ctx.shadowBlur = 0;
+}
+function drawTrailWall(cycle){
+  const y0 = levelY(cycle.level);
+  const pts = cycle.alive ? cycle.trail.concat([{x:cycle.x, z:cycle.z, level:cycle.level}]) : cycle.trail;
+  for(let i=0; i<pts.length-1; i++){
+    if(pts[i].level !== cycle.level && pts[i+1].level !== cycle.level) continue;
+    drawWallSegment(pts[i].x, pts[i].z, pts[i+1].x, pts[i+1].z, cycle.style, y0);
+  }
+}
+// A solid filled silhouette (head + crouched torso/arm) instead of a
+// stick-figure wireframe, matching the solid bike body -- used for the
+// SIDE view (see drawCycleMarker's dispatch).
+function drawRiderFigure(size, edgeColor){
+  ctx.save();
+  ctx.fillStyle = '#eafeff';
+  ctx.shadowColor = edgeColor;
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.arc(size*0.15, -size*0.68, size*0.1, 0, Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(size*0.22, -size*0.6);
+  ctx.lineTo(size*0.5, -size*0.24);
+  ctx.lineTo(size*0.15, -size*0.35);
+  ctx.lineTo(-size*0.15, -size*0.32);
+  ctx.lineTo(-size*0.05, -size*0.55);
+  ctx.closePath();
+  ctx.fillStyle = edgeColor;
+  ctx.fill();
+  ctx.restore();
+}
+// A compact helmet-and-collar silhouette for the END-ON (rear/front)
+// views -- the rider is seen from directly behind or ahead, not in
+// profile, so it's centered rather than perched at the canopy.
+// rev6: the shoulders used to be a large solid ellipse filled in the
+// rider's neon color -- at this sprite's small size that colored blob
+// dominated the whole marker, defeating the point of a cream body with
+// LIGHT accents. White helmet is now the dominant shape; the neon color
+// is just a thin collar-trim arc underneath it.
+function drawRiderEndOn(size, edgeColor){
+  ctx.save();
+  ctx.fillStyle = '#eafeff';
+  ctx.shadowColor = edgeColor;
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.arc(0, -size*0.02, size*0.14, 0, Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle = edgeColor;
+  ctx.shadowBlur = 6;
+  ctx.lineWidth = Math.max(0.8, size*0.03);
+  ctx.beginPath();
+  ctx.arc(0, size*0.12, size*0.17, Math.PI*0.15, Math.PI*0.85);
+  ctx.stroke();
+  ctx.restore();
+}
+// rev7: two-tone F1-style tire -- a wide dark rubber ring around a much
+// smaller central hub (real motorsport wheels are mostly tire, a small
+// hub) -- instead of rev6's single flat dark ellipse. `spin` (radians,
+// driven by cycle.wheelSpin -- see update()) rotates a small accent
+// cross inside the hub so the wheel visibly turns as the bike travels.
+function drawWheelLocal(cx, cy, r, color, spin){
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, r, r*0.85, 0, 0, Math.PI*2);
+  ctx.fillStyle = '#111318';
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, r*0.42, r*0.36, 0, 0, Math.PI*2);
+  ctx.fillStyle = '#06070a';
+  ctx.fill();
+  ctx.lineWidth = Math.max(0.5, r*0.08);
+  ctx.stroke();
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(spin || 0);
+  ctx.beginPath();
+  ctx.moveTo(-r*0.32, 0); ctx.lineTo(r*0.32, 0);
+  ctx.moveTo(0, -r*0.28); ctx.lineTo(0, r*0.28);
+  ctx.lineWidth = Math.max(0.6, r*0.1);
+  ctx.stroke();
+  ctx.restore();
+}
+// The original angular wedge-plus-canopy silhouette -- correct for a
+// bike seen from the SIDE (crossing roughly perpendicular to the
+// camera's view). rev6: solid cream body (BIKE_BODY_FILL/DARK, shared
+// across all riders) with a glowing neon accent stripe in the rider's
+// own color -- the film's "light/neutral chassis, colored light
+// accents" look -- plus much fatter F1-style wheels, sized up enough to
+// visibly bulge past the body silhouette rather than sitting flush
+// inside it.
+function drawBikeSide(size, cycle, baseAlpha){
+  ctx.beginPath();
+  ctx.moveTo(size*1.05, 0);
+  ctx.lineTo(size*0.55, -size*0.22);
+  ctx.lineTo(size*0.1, -size*0.58);
+  ctx.lineTo(-size*0.55, -size*0.4);
+  ctx.lineTo(-size*0.95, -size*0.12);
+  ctx.lineTo(-size*0.95, size*0.14);
+  ctx.lineTo(-size*0.45, size*0.3);
+  ctx.lineTo(size*0.2, size*0.26);
+  ctx.lineTo(size*0.6, size*0.16);
+  ctx.closePath();
+  // rev6 fix: the body FILL itself no longer casts a shadowBlur glow --
+  // at this sprite's small on-screen size, a strong red/blue/green blur
+  // radiating from the whole body silhouette completely overpowered the
+  // cream fill color underneath (confirmed via direct pixel sampling --
+  // the body read as solid red, not cream, despite the correct fillStyle
+  // being set). Glow is now reserved for the neon accent stripe/wheel
+  // rim/lights specifically, which is also just a more accurate reading
+  // of "light accents on a neutral chassis" than "the whole bike glows."
+  ctx.fillStyle = BIKE_BODY_FILL;
+  ctx.shadowBlur = 0;
+  ctx.fill();
+  ctx.strokeStyle = cycle.style.edge;
+  ctx.lineWidth = Math.max(1, size*0.035);
+  ctx.shadowColor = cycle.style.edge;
+  ctx.shadowBlur = 3;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(size*0.6, size*0.16);
+  ctx.lineTo(size*0.2, size*0.26);
+  ctx.lineTo(-size*0.45, size*0.3);
+  ctx.lineTo(-size*0.95, size*0.14);
+  ctx.lineTo(-size*0.65, size*0.02);
+  ctx.lineTo(size*0.4, size*0.05);
+  ctx.closePath();
+  ctx.fillStyle = BIKE_BODY_DARK;
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = baseAlpha*0.85;
+  ctx.fill();
+  ctx.globalAlpha = baseAlpha;
+
+  // rev7: a windscreen/canopy facet (a lighter near-white panel low on
+  // the hump) and a front fork strut down to the wheel -- small
+  // structural details that read as "an actual machine," not just a
+  // flat wedge.
+  ctx.beginPath();
+  ctx.moveTo(size*0.32, -size*0.42);
+  ctx.lineTo(size*0.55, -size*0.24);
+  ctx.lineTo(size*0.28, -size*0.2);
+  ctx.lineTo(size*0.1, -size*0.34);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.fill();
+  ctx.strokeStyle = '#0b0d10';
+  ctx.lineWidth = Math.max(0.6, size*0.02);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(size*0.62, -size*0.14);
+  ctx.lineTo(size*0.68, size*0.16);
+  ctx.strokeStyle = '#3a3630';
+  ctx.lineWidth = Math.max(0.8, size*0.028);
+  ctx.stroke();
+
+  // Neon accent stripe down the spine -- the ONE part of the bike meant
+  // to actually glow, the "light pattern" on the cream chassis.
+  ctx.beginPath();
+  ctx.moveTo(size*0.85, -size*0.08);
+  ctx.lineTo(-size*0.75, -size*0.02);
+  ctx.strokeStyle = cycle.style.edge;
+  ctx.shadowColor = cycle.style.edge;
+  ctx.shadowBlur = 12;
+  ctx.lineWidth = Math.max(1, size*0.045);
+  ctx.stroke();
+
+  ctx.lineWidth = Math.max(0.9, size*0.035);
+  ctx.shadowColor = cycle.style.edge;
+  ctx.shadowBlur = 5;
+  drawWheelLocal(-size*0.66, size*0.28, size*0.36, cycle.style.edge, cycle.wheelSpin);
+  drawWheelLocal(size*0.7, size*0.24, size*0.28, cycle.style.edge, cycle.wheelSpin);
+  ctx.shadowBlur = 16;
+  ctx.fillStyle = '#eafeff';
+  ctx.beginPath(); ctx.arc(size*1.05, 0, Math.max(1, size*0.055), 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = cycle.style.edge;
+  ctx.beginPath(); ctx.arc(-size*0.95, size*0.02, Math.max(1, size*0.05), 0, Math.PI*2); ctx.fill();
+}
+// rev5: an END-ON silhouette for a bike heading directly away from or
+// toward the camera -- the SIDE wedge, rotated to point "away" on
+// screen, used to render as a thin edge-on sliver ("looks like it's on
+// its side") because a shape that's long in the direction of travel
+// doesn't foreshorten on a flat 2D billboard the way it would in true
+// 3D. This shape is instead compact along the travel axis and wide
+// across it -- a hexagonal shield, pointed toward the far end, widest at
+// the near end (closest to camera) -- which is what actually reads as
+// "a bike viewed from behind/ahead." The player's own bike ALWAYS uses
+// this (the camera always looks exactly along the player's heading), so
+// this is also the "render from above/behind" view.
+function drawBikeEndOn(size, cycle, baseAlpha, facingAway){
+  const s = facingAway ? 1 : -1; // which local-X direction is "far"
+  ctx.beginPath();
+  ctx.moveTo(s*size*0.38, 0);
+  ctx.lineTo(s*size*0.08, -size*0.46);
+  ctx.lineTo(-s*size*0.4, -size*0.4);
+  ctx.lineTo(-s*size*0.56, 0);
+  ctx.lineTo(-s*size*0.4, size*0.4);
+  ctx.lineTo(s*size*0.08, size*0.46);
+  ctx.closePath();
+  // No shadowBlur on the body fill itself -- see drawBikeSide's comment,
+  // same fix (the glow was overpowering the cream color at this size).
+  ctx.fillStyle = BIKE_BODY_FILL;
+  ctx.shadowBlur = 0;
+  ctx.fill();
+  ctx.strokeStyle = cycle.style.edge;
+  ctx.lineWidth = Math.max(1, size*0.035);
+  ctx.shadowColor = cycle.style.edge;
+  ctx.shadowBlur = 3;
+  ctx.stroke();
+
+  // Inset panel -- subtle two-tone shading for a "solid" read. Shrunk
+  // and no longer ALSO re-stroked in the neon color -- at this sprite's
+  // small size, a big dark panel plus a second colored outline right in
+  // the crowded center (on top of the main body outline, the collar,
+  // and the wheel rim) left very little room for the cream fill it was
+  // supposed to be accenting to actually read as light-colored.
+  ctx.beginPath();
+  ctx.moveTo(s*size*0.1, 0);
+  ctx.lineTo(s*size*0.0, -size*0.16);
+  ctx.lineTo(-s*size*0.2, 0);
+  ctx.lineTo(s*size*0.0, size*0.16);
+  ctx.closePath();
+  ctx.fillStyle = BIKE_BODY_DARK;
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = baseAlpha*0.85;
+  ctx.fill();
+  ctx.globalAlpha = baseAlpha;
+
+  // A single very fat wheel dead-center (F1-style) -- front and rear
+  // overlap almost entirely when a single-track vehicle is viewed
+  // end-on, so one wide hub reads correctly here.
+  ctx.lineWidth = Math.max(0.9, size*0.035);
+  ctx.shadowColor = cycle.style.edge;
+  ctx.shadowBlur = 8;
+  drawWheelLocal(-s*size*0.5, 0, size*0.38, cycle.style.edge, cycle.wheelSpin);
+
+  // Taillight (edge color) facing away; headlight (white) facing us.
+  ctx.shadowBlur = 16;
+  ctx.fillStyle = facingAway ? cycle.style.edge : '#eafeff';
+  ctx.beginPath(); ctx.arc(-s*size*0.56, 0, Math.max(1, size*0.06), 0, Math.PI*2); ctx.fill();
+}
+// A solid-bodied light-cycle marker, oriented toward its actual screen-
+// space travel direction (via a second projected point just ahead) so
+// it stays correct under perspective. Which silhouette gets drawn
+// depends on the bike's heading relative to the CAMERA's heading (not
+// just its own travel direction) -- see drawBikeEndOn's comment.
+// `revealT` (0..1, default 1) and `showRider` (default true) drive the
+// startup materialize/mount sequence.
+function drawCycleMarker(cycle, revealT, showRider){
+  if(!cycle.alive) return;
+  if(revealT === undefined) revealT = 1;
+  if(showRider === undefined) showRider = true;
+  if(revealT <= 0) return;
+  const fwd = headingVec(cycle.heading);
+  const baseY = levelY(cycle.level);
+  const p = project(cycle.x, baseY+WALL_HEIGHT*0.4, cycle.z);
+  const ahead = project(cycle.x+fwd.x*1.2, baseY+WALL_HEIGHT*0.4, cycle.z+fwd.z*1.2);
+  if(!p || !ahead) return;
+  const ang = Math.atan2(ahead.y-p.y, ahead.x-p.x);
+  const size = clamp(p.scale*1.7, 8, 88); // rev8: bikes doubled in size, per request
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(ang);
+  // Materializing flicker: a shimmering, randomized alpha while the bike
+  // is still "de-rezzing" in, settling to fully solid at revealT===1.
+  const baseAlpha = revealT < 1 ? clamp(revealT*(0.55+Math.random()*0.55), 0, 1) : 1;
+  ctx.globalAlpha = baseAlpha;
+
+  const rel = Math.round(normalizeHeading(cycle.heading - camState.heading) / (Math.PI/2)) % 4;
+  if(rel === 0){
+    drawBikeEndOn(size, cycle, baseAlpha, true);
+    if(showRider) drawRiderEndOn(size, cycle.style.edge);
+  } else if(rel === 2){
+    drawBikeEndOn(size, cycle, baseAlpha, false);
+    if(showRider) drawRiderEndOn(size, cycle.style.edge);
+  } else {
+    drawBikeSide(size, cycle, baseAlpha);
+    if(showRider) drawRiderFigure(size, cycle.style.edge);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+// Brief radial motion-streak flash at the moment of a player turn --
+// purely decorative (no world/camera state involved, so it doesn't
+// touch the "instant, non-interpolated heading snap" rule), drawn
+// screen-locked (outside the bank rotation) so it reads as "the screen
+// itself just spun," making the hard cut visibly legible as a rotation.
+function drawTurnFlash(){
+  if(turnFlashTimer <= 0) return;
+  const t = turnFlashTimer / TURN_FLASH_DURATION;
+  ctx.save();
+  ctx.globalAlpha = t*0.75;
+  ctx.strokeStyle = '#eafeff';
+  ctx.shadowColor = '#8ff2ff';
+  ctx.shadowBlur = 14;
+  ctx.lineWidth = 2;
+  const n = 10;
+  for(let i=0;i<n;i++){
+    const a = (i/n)*Math.PI*2;
+    const r1 = 18, r2 = 18 + 150*(1-t);
+    ctx.beginPath();
+    ctx.moveTo(CENTER_X+Math.cos(a)*r1, CENTER_Y+Math.sin(a)*r1);
+    ctx.lineTo(CENTER_X+Math.cos(a)*r2, CENTER_Y+Math.sin(a)*r2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ---------- CONSOLE HUD (score + level + north-up minimap) ----------
+function drawMinimap(){
+  // rev8: larger radar dish, covering more world-space per request.
+  const size = Math.min(CONSOLE_H*0.98, 132);
+  const r = size/2;
+  const cx = W - r - 14, cy = CONSOLE_Y + CONSOLE_H/2;
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.strokeStyle = 'rgba(0,255,255,0.4)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.clip();
+  const scale = r / MINIMAP_RANGE;
+  for(const c of cycles){
+    if(c.level !== player.level) continue;
+    const pts = c.alive ? c.trail.concat([{x:c.x, z:c.z}]) : c.trail;
+    if(pts.length < 2) continue;
+    ctx.strokeStyle = c.style.edge;
+    ctx.lineWidth = 0.8; // thinner radar blips, matching the request
+    ctx.beginPath();
+    pts.forEach((pt,i)=>{
+      const mx = cx + (pt.x-player.x)*scale, my = cy - (pt.z-player.z)*scale; // north-up, centered on player
+      if(i===0) ctx.moveTo(mx,my); else ctx.lineTo(mx,my);
+    });
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(cx,cy,2,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  ctx.restore();
+}
+function drawConsole(){
+  ctx.save();
+  ctx.fillStyle = '#04080a';
+  ctx.fillRect(0, CONSOLE_Y, W, CONSOLE_H);
+  ctx.strokeStyle = 'rgba(0,255,255,0.4)';
+  ctx.beginPath(); ctx.moveTo(0,CONSOLE_Y+0.5); ctx.lineTo(W,CONSOLE_Y+0.5); ctx.stroke();
+  ctx.fillStyle = '#7ff9ff';
+  ctx.font = '13px "Courier New", monospace';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('SCORE ' + String(score).padStart(5,'0'), 12, CONSOLE_Y + CONSOLE_H*0.28);
+  ctx.font = '11px "Courier New", monospace';
+  ctx.fillStyle = '#5c9aa3';
+  const levelLabel = ['LOWER','MID','UPPER'][player.level];
+  ctx.fillText(state==='play' ? 'SPEED ' + Math.round(currentSpeed) + '  LEVEL ' + levelLabel : 'STANDBY', 12, CONSOLE_Y + CONSOLE_H*0.62);
+  drawMinimap();
+  ctx.restore();
+}
+
+// ---------- AUDIO ----------
+// Same beep()-based blip pattern as space-ship, trimmed to what Tron needs.
+let audioCtx;
+function ensureAudio(){
+  if(!audioCtx){ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); }
+  if(audioCtx.state === 'suspended'){ audioCtx.resume(); }
+}
+function beep(freq, dur, type, vol, delay){
+  if(!audioCtx) return;
+  type = type||'square'; vol = vol===undefined?0.05:vol; delay = delay||0;
+  const startAt = audioCtx.currentTime + delay;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.value = freq;
+  g.gain.value = vol;
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(startAt);
+  g.gain.exponentialRampToValueAtTime(0.0001, startAt + dur);
+  o.stop(startAt + dur);
+}
+let noiseBufferCache = null;
+function getNoiseBuffer(){
+  if(noiseBufferCache) return noiseBufferCache;
+  const dur = 0.4;
+  const n = Math.floor(audioCtx.sampleRate * dur);
+  const buffer = audioCtx.createBuffer(1, n, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for(let i=0;i<n;i++){ data[i] = (Math.random()*2-1) * Math.pow(1 - i/n, 2); }
+  noiseBufferCache = buffer;
+  return noiseBufferCache;
+}
+function crunch(dur, vol, filterFreq){
+  if(!audioCtx) return;
+  const src = audioCtx.createBufferSource();
+  src.buffer = getNoiseBuffer();
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = filterFreq;
+  const g = audioCtx.createGain();
+  g.gain.value = vol;
+  src.connect(filter); filter.connect(g); g.connect(audioCtx.destination);
+  src.start();
+  src.stop(audioCtx.currentTime + dur);
+}
+function sfxSelect(){ beep(660, 0.04, 'sine', 0.06); }
+function sfxTurn(){ beep(880, 0.03, 'square', 0.045); }
+function sfxRamp(){ beep(520, 0.05, 'square', 0.05, 0); beep(780, 0.06, 'square', 0.05, 0.05); }
+function sfxStart(){
+  beep(220, 0.08, 'square', 0.05, 0);
+  beep(440, 0.08, 'square', 0.05, 0.08);
+  beep(660, 0.12, 'square', 0.05, 0.16);
+}
+function sfxCrash(){ crunch(0.3, 0.28, 700); beep(140, 0.2, 'sawtooth', 0.08, 0.05); }
+function sfxGameOver(){ [300,240,180,120].forEach((f,i)=> beep(f, 0.22, 'sawtooth', 0.08, i*0.15)); }
+
+// ---------- SOUNDTRACK ----------
+// A synthesized, self-composed driving electronic pulse for gameplay --
+// evokes the reference's synth score without using (or being able to
+// use) anything from the actual film. Built entirely from oscillators,
+// same beep()-based language as the SFX above, just scheduled as a
+// looping sequence instead of one-shot hits. Uses Web Audio's own clock
+// (audioCtx.currentTime) with a short look-ahead window rather than
+// setInterval, which is the standard fix for JS timer drift causing
+// audible timing jitter in a musical loop.
+let musicPlaying = false;
+let musicNextNoteTime = 0;
+let musicStep = 0;
+let musicSchedulerHandle = null;
+const MUSIC_STEP_DUR = 60 / 132 / 2; // 8th notes at a driving ~132bpm
+const MUSIC_LOOKAHEAD = 0.15;
+// A dark, minor-key pulse (A minor-ish) -- low sawtooth bass every step,
+// a sparser square-wave arpeggio on the off-steps for forward motion.
+const MUSIC_BASS_PATTERN = [55, 55, 82.41, 55, 55, 55, 73.42, 65.41];
+const MUSIC_ARP_PATTERN = [220, 261.63, 329.63, 261.63, 220, 261.63, 329.63, 392];
+function scheduleMusicNote(){
+  const t = musicNextNoteTime;
+  const bassFreq = MUSIC_BASS_PATTERN[musicStep % MUSIC_BASS_PATTERN.length];
+  const bo = audioCtx.createOscillator(), bg = audioCtx.createGain();
+  bo.type = 'sawtooth'; bo.frequency.value = bassFreq;
+  bo.connect(bg); bg.connect(audioCtx.destination);
+  bg.gain.setValueAtTime(0.001, t);
+  bg.gain.exponentialRampToValueAtTime(0.055, t + 0.02);
+  bg.gain.exponentialRampToValueAtTime(0.001, t + MUSIC_STEP_DUR*0.9);
+  bo.start(t); bo.stop(t + MUSIC_STEP_DUR);
+  if(musicStep % 2 === 0){
+    const arpFreq = MUSIC_ARP_PATTERN[(musicStep/2|0) % MUSIC_ARP_PATTERN.length];
+    const ao = audioCtx.createOscillator(), ag = audioCtx.createGain();
+    ao.type = 'square'; ao.frequency.value = arpFreq;
+    ao.connect(ag); ag.connect(audioCtx.destination);
+    ag.gain.setValueAtTime(0.001, t);
+    ag.gain.exponentialRampToValueAtTime(0.022, t + 0.015);
+    ag.gain.exponentialRampToValueAtTime(0.001, t + MUSIC_STEP_DUR*1.6);
+    ao.start(t); ao.stop(t + MUSIC_STEP_DUR*1.7);
+  }
+  musicStep++;
+  musicNextNoteTime += MUSIC_STEP_DUR;
+}
+function musicScheduler(){
+  if(!musicPlaying) return;
+  while(musicNextNoteTime < audioCtx.currentTime + MUSIC_LOOKAHEAD){
+    scheduleMusicNote();
+  }
+  musicSchedulerHandle = setTimeout(musicScheduler, 50);
+}
+function startMusic(){
+  if(musicPlaying || !audioCtx) return;
+  musicPlaying = true;
+  musicStep = 0;
+  musicNextNoteTime = audioCtx.currentTime + 0.05;
+  musicScheduler();
+}
+function stopMusic(){
+  musicPlaying = false;
+  if(musicSchedulerHandle){ clearTimeout(musicSchedulerHandle); musicSchedulerHandle = null; }
+}
+
+// ---------- STATE / SCREENS ----------
+let state = 'title'; // title | nameentry | intro | play | killcam | gameover
+let inPortal = false, portalHandle = null, sessionStartTime = 0;
+window.addEventListener('message', (e)=>{
+  if(!e.data || e.data.type !== 'portal-init') return;
+  inPortal = true;
+  portalHandle = typeof e.data.handle === 'string' ? e.data.handle : null;
+  if(state === 'title') renderTitleScreen(true);
+});
+
+const NAME_CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+let playerChars = [0,0,0];
+let activeDigitIndex = 0;
+function playerName(){ return playerChars.map(ci=>NAME_CHARSET[ci]).join(''); }
+
+// Same Neon-backed leaderboard API every other game in this repo already
+// uses -- `game` is just a key, no backend changes needed.
+const API_BASE = 'https://games-ochre-beta-22.vercel.app';
+function fetchJSON(url, opts){ return fetch(url, opts).then(r => r.ok ? r.json() : null).catch(()=>null); }
+
+const LEADERBOARD_KEY = 'tronLeaderboard';
+function loadLeaderboard(){
+  try{
+    const raw = localStorage.getItem(LEADERBOARD_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  }catch(e){ return []; }
+}
+function saveLeaderboard(list){
+  try{ localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(list)); }catch(e){}
+}
+function recordScore(name, finalScore){
+  const list = loadLeaderboard();
+  list.push({ name, score: finalScore, date: new Date().toISOString() });
+  list.sort((a,b)=>b.score-a.score);
+  const top10 = list.slice(0,10);
+  saveLeaderboard(top10);
+  return top10;
+}
+let leaderboard = loadLeaderboard();
+function leaderboardHTML(){
+  if(leaderboard.length===0) return '<p class="small">NO SCORES YET</p>';
+  return '<div class="lb">' + leaderboard.slice(0,10).map((e,i)=>
+    '<div class="lbrow' + (i===0?' top':'') + '"><span>' + (i+1) + '. ' + e.name + '</span><span>' +
+    String(e.score).padStart(6,'0') + '</span></div>'
+  ).join('') + '</div>';
+}
+
+function renderTitleScreen(skipRemoteRefresh){
+  const controlsHTML = ORIENT === 'desktop'
+    ? '<p>STEER: ARROW LEFT/RIGHT OR A/D, OR CLICK LEFT/RIGHT SIDE</p>'
+    : '<p>STEER: TAP LEFT OR RIGHT SIDE OF THE SCREEN</p>';
+  const handleHTML = (inPortal && portalHandle)
+    ? '<p class="small">PLAYING AS ' + portalHandle + '</p>' +
+      '<div class="btn" id="changeHandleBtn">CHANGE HANDLE</div>'
+    : '';
+  centerMsg.innerHTML =
+    '<h1>TRON</h1>' +
+    '<p class="small" style="margin-top:-8px;">LIGHT CYCLES // REV 8</p>' +
+    '<p>3 LEVELS &middot; RAMPS &middot; WATCH FOR HEAD-ON RUNS</p>' +
+    '<p>AVOID YOUR TRAIL AND THE ENEMY TRAILS</p>' +
+    controlsHTML +
+    handleHTML +
+    '<p class="small">' + (ORIENT==='desktop' ? 'CLICK' : 'TAP') + ' TO BEGIN</p>' +
+    '<div class="btn" id="catalogueBtn">GAMES CATALOGUE</div>' +
+    '<div class="heading">TOP SCORES</div>' +
+    leaderboardHTML();
+  centerMsg.style.display = 'block';
+  const changeHandleBtn = document.getElementById('changeHandleBtn');
+  if(changeHandleBtn){
+    changeHandleBtn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      ensureAudio();
+      state = 'nameentry';
+      renderNameEntry();
+      sfxSelect();
+    });
+  }
+  const catalogueBtn = document.getElementById('catalogueBtn');
+  if(catalogueBtn){
+    catalogueBtn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      window.top.location.href = 'https://neon-flashback.com/';
+    });
+  }
+  if(!skipRemoteRefresh && API_BASE){
+    fetchJSON(`${API_BASE}/api/leaderboard?game=tron`).then(top=>{
+      if(Array.isArray(top) && state==='title'){ leaderboard = top; renderTitleScreen(true); }
+    });
+  }
+}
+function renderNameEntry(){
+  centerMsg.innerHTML =
+    '<div class="heading">ENTER CALLSIGN</div>' +
+    '<p class="small">PICK YOUR 3-LETTER CALLSIGN</p>' +
+    '<div class="digits">' + playerChars.map((ci,i)=>
+      '<div class="digitBox' + (i===activeDigitIndex?' active':'') + '">' + NAME_CHARSET[ci] + '</div>'
+    ).join('') + '</div>' +
+    '<div class="btn" id="letterUpBtn">LETTER +</div>' +
+    '<div class="btn" id="letterDownBtn">LETTER -</div><br>' +
+    '<div class="btn" id="prevSlotBtn">&lt; SLOT</div>' +
+    '<div class="btn" id="nextSlotBtn">SLOT &gt;</div><br>' +
+    '<div class="btn" id="confirmBtn">START</div>' +
+    '<p class="small">' + (ORIENT==='desktop' ? 'ARROWS TO CHOOSE, ENTER TO START' : '') + '</p>';
+  centerMsg.style.display = 'block';
+  const bind = (id, fn) => {
+    const el = document.getElementById(id);
+    if(el) el.addEventListener('click', (e)=>{ e.stopPropagation(); fn(); });
+  };
+  bind('letterUpBtn', ()=>cycleDigit(1));
+  bind('letterDownBtn', ()=>cycleDigit(-1));
+  bind('prevSlotBtn', ()=>moveDigitSlot(-1));
+  bind('nextSlotBtn', ()=>moveDigitSlot(1));
+  bind('confirmBtn', ()=>confirmNameEntry());
+}
+function moveDigitSlot(dir){
+  activeDigitIndex = clamp(activeDigitIndex+dir, 0, playerChars.length-1);
+  sfxSelect();
+  renderNameEntry();
+}
+function cycleDigit(dir){
+  const n = NAME_CHARSET.length;
+  playerChars[activeDigitIndex] = ((playerChars[activeDigitIndex]+dir)%n+n)%n;
+  sfxSelect();
+  renderNameEntry();
+}
+function confirmNameEntry(){
+  if(inPortal){
+    portalHandle = playerName();
+    window.parent.postMessage({type:'set-handle', handle: portalHandle}, '*');
+  }
+  startGame();
+}
+function requestFullscreenTron(){
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if(req){ try{ req.call(el).catch(()=>{}); }catch(e){} }
+}
+// "DE-REZ" startup cam -- a brief close-up shot on the player's own spawn
+// point while the bike materializes in with a flicker, then the rider
+// fades in on top of it, before hard-cutting to the normal gameplay
+// chase-cam. Player/AI stay frozen (update() no-ops during 'intro').
+const INTRO_DURATION = 1.8;
+const INTRO_RIDER_AT = 0.55;
+let introTimer = 0;
+function startGame(){
+  ensureAudio();
+  resetGame();
+  state = 'intro';
+  introTimer = 0;
+  sessionStartTime = Date.now();
+  centerMsg.style.display = 'none';
+  sfxStart();
+  startMusic();
+  requestFullscreenTron();
+}
+function endRound(){
+  state = 'gameover';
+  stopMusic();
+  sfxGameOver();
+  leaderboard = recordScore(playerName(), score);
+  showGameOver();
+  if(inPortal){
+    window.parent.postMessage({
+      type: 'session-log', slug: 'tron', handle: playerName(),
+      score, startedAt: sessionStartTime, endedAt: Date.now()
+    }, '*');
+  }
+}
+function showGameOver(skipRemoteRefresh){
+  centerMsg.innerHTML =
+    '<h1>DEREZZED</h1>' +
+    '<p>' + playerName() + ' — DISTANCE: ' + score + '</p>' +
+    '<div class="btn" id="newGameBtn">NEW GAME</div>' +
+    '<div class="btn" id="returnMenuBtn">GAMES CATALOGUE</div>' +
+    '<p class="small">TAP NEW GAME TO RUN AGAIN</p>' +
+    '<div class="heading">TOP SCORES</div>' +
+    leaderboardHTML();
+  centerMsg.style.display = 'block';
+  const newGameBtn = document.getElementById('newGameBtn');
+  if(newGameBtn){
+    newGameBtn.addEventListener('click', (e)=>{ e.stopPropagation(); startGame(); });
+  }
+  const returnMenuBtn = document.getElementById('returnMenuBtn');
+  if(returnMenuBtn){
+    returnMenuBtn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      window.top.location.href = 'https://neon-flashback.com/';
+    });
+  }
+  if(!skipRemoteRefresh) submitScoreRemote(playerName(), score);
+}
+function submitScoreRemote(name, finalScore){
+  if(!API_BASE) return;
+  fetchJSON(`${API_BASE}/api/score`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ game: 'tron', name, score: finalScore })
+  }).then(top=>{
+    if(Array.isArray(top) && state==='gameover'){
+      leaderboard = top;
+      showGameOver(true);
+    }
+  });
+}
+function handlePrimaryAction(){
+  if(state==='title'){
+    ensureAudio();
+    if(inPortal && portalHandle){
+      playerChars = portalHandle.split('').slice(0,3).map(ch=>{
+        const idx = NAME_CHARSET.indexOf(ch);
+        return idx>=0 ? idx : 0;
+      });
+      while(playerChars.length<3) playerChars.push(0);
+      startGame();
+      return;
+    }
+    state = 'nameentry';
+    renderNameEntry();
+    sfxSelect();
+  } else if(state==='gameover'){
+    state = 'title';
+    playerChars = [0,0,0];
+    activeDigitIndex = 0;
+    renderTitleScreen();
+  }
+}
+renderTitleScreen();
+
+// ---------- INPUT ----------
+window.addEventListener('keydown', (e)=>{
+  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Enter'].includes(e.code)) e.preventDefault();
+  if(e.repeat) return;
+  if(state==='play'){
+    if(e.code==='ArrowLeft' || e.code==='KeyA'){ turnCycle(player,'left'); if(player.alive) sfxTurn(); }
+    if(e.code==='ArrowRight' || e.code==='KeyD'){ turnCycle(player,'right'); if(player.alive) sfxTurn(); }
+  }
+  if(state==='nameentry'){
+    if(e.code==='ArrowUp') cycleDigit(1);
+    if(e.code==='ArrowDown') cycleDigit(-1);
+    if(e.code==='ArrowLeft') moveDigitSlot(-1);
+    if(e.code==='ArrowRight') moveDigitSlot(1);
+  }
+  if(e.code==='Enter'){
+    if(state==='title') handlePrimaryAction();
+    else if(state==='nameentry') confirmNameEntry();
+    else if(state==='gameover') handlePrimaryAction();
+  }
+});
+canvas.addEventListener('pointerdown', (e)=>{
+  ensureAudio();
+  if(state !== 'play') return;
+  const rect = canvas.getBoundingClientRect();
+  const px = (e.clientX - rect.left) * (canvas.width/rect.width);
+  if(px < VIEW_X + VIEW_W/2) turnCycle(player,'left'); else turnCycle(player,'right');
+  if(player.alive) sfxTurn();
+});
+canvas.addEventListener('click', (e)=>{
+  if(state==='play' || state==='nameentry') return;
+  handlePrimaryAction();
+});
+
+// ---------- LOOP ----------
+let lastTime = 0;
+function update(dt){
+  if(state === 'intro'){
+    introTimer += dt;
+    if(introTimer >= INTRO_DURATION) state = 'play';
+    return;
+  }
+  if(state === 'killcam'){
+    killcamTimer += dt;
+    for(const p of particles){
+      p.age += dt;
+      p.x += p.vx*dt; p.z += p.vz*dt; p.y += p.vy*dt;
+      p.vy -= 9*dt;
+    }
+    particles = particles.filter(p => p.age < p.life);
+    for(const ex of explosions) ex.age += dt;
+    explosions = explosions.filter(ex => ex.age < ex.maxAge);
+    if(killcamTimer >= KILLCAM_DURATION) endRound();
+    return;
+  }
+  if(state !== 'play') return;
+  elapsed += dt;
+  currentSpeed = Math.min(SPEED_CAP, BASE_SPEED + elapsed*SPEED_RAMP);
+  if(bankTimer > 0){ bankTimer -= dt; if(bankTimer < 0) bankTimer = 0; }
+  if(turnFlashTimer > 0){ turnFlashTimer -= dt; if(turnFlashTimer < 0) turnFlashTimer = 0; }
+  // Cinematic camera variety -- periodically pick a new shot; turnCycle()
+  // can also override this reactively on a turn (turnSwingRight/Left).
+  // Either way, stepCamOffset() below does the actual fast smooth blend
+  // every frame regardless of why the target changed.
+  shotTimer -= dt;
+  if(shotTimer <= 0){
+    currentShot = pickNextShot();
+    shotTimer = SHOT_MIN_DURATION + Math.random()*(SHOT_MAX_DURATION-SHOT_MIN_DURATION);
+    updateCamOffsetTarget();
+  }
+  stepCamOffset(dt);
+  for(const c of cycles){
+    if(!c.alive) continue;
+    c.x += Math.sin(c.heading) * currentSpeed * dt;
+    c.z += Math.cos(c.heading) * currentSpeed * dt;
+  }
+  if(player.alive) playerDistance += currentSpeed * dt;
+  score = Math.floor(playerDistance);
+  aiDecide(aiBlue, dt);
+  aiDecide(aiGreen, dt);
+  for(const c of cycles){
+    if(c.rampCooldown > 0) c.rampCooldown -= dt;
+    if(c.chickenTimer > 0){ c.chickenTimer -= dt; if(c.chickenTimer < 0) c.chickenTimer = 0; }
+    if(c.alive){
+      checkRampForCycle(c);
+      c.wheelSpin = (c.wheelSpin + currentSpeed*dt*0.7) % (Math.PI*2);
+    }
+  }
+  // rev5: keep both enemies "in play" -- a self-preserving random-walker
+  // can otherwise drift far enough away (or stay dead long enough after
+  // a crash) that it's effectively gone for the rest of a long run.
+  // Recycling them back in near the player, well outside the render
+  // radius so the jump is never actually seen, matches the request that
+  // enemies "should always reappear."
+  for(const c of cycles){
+    if(c === player) continue;
+    if(!c.alive){
+      c.deadTimer += dt;
+      if(c.deadTimer > AI_RESPAWN_DELAY) respawnEnemyNearPlayer(c);
+      continue;
+    }
+    if(Math.hypot(c.x-player.x, c.z-player.z) > AI_LEASH_DISTANCE) respawnEnemyNearPlayer(c);
+  }
+  for(const c of cycles){
+    if(c.alive && checkCollision(c)) crashCycle(c);
+  }
+}
+function drawIntroCaption(){
+  ctx.save();
+  const t = clamp(introTimer/INTRO_DURATION, 0, 1);
+  const label = t < INTRO_RIDER_AT ? 'INITIALIZING LIGHT CYCLE' : 'PROGRAM ENGAGED';
+  ctx.font = '13px "Courier New", monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(180,245,255,' + (0.5+Math.random()*0.4).toFixed(2) + ')';
+  ctx.shadowColor = '#8ff2ff';
+  ctx.shadowBlur = 8;
+  ctx.fillText(label, CENTER_X, VIEW_H*0.14);
+  ctx.restore();
+}
+function render(){
+  ctx.clearRect(0,0,W,H);
+  updateCamState();
+  ctx.save();
+  // Jerky bank: a fixed-angle screen rotation for exactly BANK_DURATION
+  // after a player turn, then an instant snap back to level -- a step
+  // function, not an eased tween.
+  const bankAngle = (state==='play' && bankTimer>0) ? bankDir*BANK_ANGLE : 0;
+  if(bankAngle !== 0){
+    ctx.translate(CENTER_X, CENTER_Y);
+    ctx.rotate(bankAngle);
+    ctx.translate(-CENTER_X, -CENTER_Y);
+  }
+  // rev8: battletank-style kill-cam zoom -- a screen-space scale around
+  // screen center, wrapping just the world-space draw (not the HUD),
+  // eased in/held/eased out over KILLCAM_DURATION. See killcamZoomScale().
+  if(state === 'killcam'){
+    const kzoom = killcamZoomScale(killcamTimer);
+    ctx.translate(CENTER_X, CENTER_Y);
+    ctx.scale(kzoom, kzoom);
+    ctx.translate(-CENTER_X, -CENTER_Y);
+  }
+  drawSky();
+  drawGridCeiling();
+  drawHorizonBar();
+  drawGridFloor();
+  const lvl = currentFloorLevel();
+  for(const r of rampsToRender(camState.x, camState.z, VIEW_RADIUS)){
+    if(r.a===lvl || r.b===lvl) drawRamp(r);
+  }
+  for(const o of obstaclesToRender(camState.x, camState.z, VIEW_RADIUS, lvl)) drawObstacle(o);
+  // rev6: back to trails-before-markers (rev5 had swapped this, guessing
+  // the opaque bike fill was hiding the trail entirely -- it wasn't; the
+  // REAL cause was drawWallSegment's near-clip bug above, which dropped
+  // the newest segment outright rather than shrinking it). With that
+  // fixed, trails-after-markers actually made things worse: the trail's
+  // now-correctly-rendered near end would paint right over the bike
+  // sprite, since they meet at the same screen point, making the whole
+  // bike look like a solid blob of trail color instead of cream. The
+  // bike sitting on top of its own trail's leading point (hiding a
+  // sliver where they touch) is correct anyway -- that's literally
+  // where the bike physically is.
+  for(const c of cycles){ if(c.level === lvl) drawTrailWall(c); }
+  if(state==='intro'){
+    const t = clamp(introTimer/INTRO_DURATION, 0, 1);
+    drawCycleMarker(player, t, introTimer >= INTRO_DURATION*INTRO_RIDER_AT);
+    drawIntroCaption();
+  } else {
+    for(const c of cycles){ if(c.level === lvl) drawCycleMarker(c, 1, true); }
+    if(state==='killcam'){ drawExplosions(); drawParticles(); }
+  }
+  ctx.restore();
+  drawTurnFlash();
+  drawConsole();
+}
+function loop(now){
+  if(!lastTime) lastTime = now;
+  let dt = (now-lastTime)/1000;
+  if(dt > 0.05) dt = 0.05;
+  lastTime = now;
+  try{
+    update(dt);
+    render();
+  }catch(err){
+    console.error('Game loop error:', err);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
