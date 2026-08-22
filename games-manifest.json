@@ -1,8 +1,9 @@
 {
-  "_comment": "Read by .github/workflows/sync-portal.yml on every push. Each entry maps a game directory + its revision-filename prefix to the slug the neon-flashback.com portal knows it by (see games-portal's `games` DB table). To add a NEW game later: (1) add an entry here with its dir/prefix/slug, (2) manually add an initial `games` row for that slug in the portal's database (active=false is fine, keeps it out of the catalog until you're ready -- see how battletank was added as a precedent). After that, this workflow keeps its source_url current automatically on every push, same as the others.",
+  "_comment": "Read by scripts/deploy-to-cloudflare.sh on every deploy (the old .github/workflows/sync-portal.yml this used to say is retired -- see 'Move games hosting from GitHub Pages to Cloudflare Pages'). Each entry maps a game directory + its revision-filename prefix to the slug the neon-flashback.com portal knows it by (see games-portal's `games` DB table). To add a NEW game later: (1) add an entry here with its dir/prefix/slug, (2) manually add an initial `games` row for that slug in the portal's database, run as the DB owner role since app_worker deliberately can't INSERT into games (active=false is fine, keeps it out of the catalog until you're ready -- see how battletank was added as a precedent). After that, the deploy script keeps its source_url current automatically on every deploy, same as the others.",
   "games": [
     { "slug": "space-ship", "dir": "space-ship", "prefix": "space_ship_rev" },
     { "slug": "word-game", "dir": "word-game", "prefix": "word_game_rev" },
-    { "slug": "battletank", "dir": "battletank", "prefix": "battle_tank_rev" }
+    { "slug": "battletank", "dir": "battletank", "prefix": "battle_tank_rev" },
+    { "slug": "tron", "dir": "tron", "prefix": "tron_rev" }
   ]
 }
